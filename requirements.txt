@@ -1,0 +1,24 @@
+# VoiceChess — merged requirements (Role 1 + Role 2 + orchestrator)
+
+# Role 2 — rules authority + AI opponent
+python-chess==1.999
+# NOTE: Stockfish itself is a SYSTEM BINARY, not pip:
+#   Raspberry Pi / Debian:  sudo apt install stockfish
+#   Windows dev box:        winget install --id Stockfish.Stockfish -e
+#                           (or drop stockfish.exe in the repo root)
+
+# Role 1 — offline STT + phonetic matching
+# vosk/sounddevice are only needed for LIVE audio; `python main.py --text`
+# works without them (imports are guarded in voice_matching/engine.py).
+vosk==0.3.44
+sounddevice==0.4.6
+rapidfuzz==3.14.5
+
+# Role 4 boundary — for the future ESP32 serial link (serial_link.py is a stub today)
+pyserial==3.5
+
+# Text-to-speech (optional; PrintSpeaker fallback needs nothing)
+# pyttsx3==2.90
+
+# Dev / tests
+pytest==8.2.2

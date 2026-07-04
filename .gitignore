@@ -1,0 +1,8 @@
+*.pyc
+.pytest_cache/
+__pycache__/
+stockfish.exe
+venv/
+model/
+.venv/
+.claude/settings.local.json
