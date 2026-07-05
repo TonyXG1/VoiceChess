@@ -94,11 +94,19 @@ Keep it that way end to end. SAN (e.g. "Nf3") is only for human-facing speech/re
                       The orchestrator derives move_type/is_capture from Role 2's
                       board BEFORE applying the move (_classify_move).
     orchestrator/     Role 5 — the turn state machine (state_machine.py) and the
-                      ESP32 serial link (serial_link.py — STUB until Role 4's
-                      firmware exists; will become pyserial + ok/<Idle> polling).
+                      ESP32 serial link (serial_link.py — REAL pyserial sender as
+                      of 2026-07-05, gated behind main.py's --serial <port>). No
+                      port = dry-run: it just prints [SERIAL-STUB] lines, so
+                      tests/CI/--text are unchanged. With a port it opens the ESP32
+                      at FluidNC baud, streams each G-code line, and reads ok/<Idle>
+                      acks. The handshake is deliberately TOLERANT (every read
+                      times out and logs, never hangs) so the pipeline emits real
+                      serial bytes BEFORE FluidNC is flashed. Role 4 still owns the
+                      ESP32 firmware + config; tighten the handshake once it answers.
     main.py           Entry point. `python main.py --text --script "e2e4,..."` runs
-                      the whole pipeline with no mic/model/robot.
-    tests/            pytest suites for voice_matching and chess_ai.
+                      the whole pipeline with no mic/model/robot; add
+                      `--serial /dev/ttyUSB0` to stream the G-code to the ESP32.
+    tests/            pytest suites for voice_matching, chess_ai, and motion.
     docs/             agents.md, interfaces.md, changelog.md, original READMEs.
 
 **Orchestration rule**: the orchestrator is the ONLY module that calls other modules.
@@ -111,8 +119,10 @@ Only listen during LISTEN — never trigger audio capture during MOVE/THINK.
 
 Role 3's real planner and Role 1's 0.2.0 update are merged (their raw clones were
 merge inputs only and have been deleted; their history lives on their own remotes).
-Role 4 (ESP32/FluidNC config + hardware build) is still another team member's work —
-serial_link.py stays a stub; don't invent its logic. Don't change Role 1/2/3 logic
+Role 4 (ESP32/FluidNC config + hardware build) is still another team member's work.
+The Pi-side serial SENDER (serial_link.py) is now real — the user directed this on
+2026-07-05 — but the ESP32 firmware/FluidNC YAML and the on-wire handshake tightening
+remain Role 4's; don't invent FluidNC config logic. Don't change Role 1/2/3 logic
 when integrating.
 
 ## Runtime facts

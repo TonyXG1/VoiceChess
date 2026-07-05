@@ -64,6 +64,11 @@ python main.py --text --tts espeak                  # typed input + spoken feedb
 python speak_test.py                                # do you hear the spoken test sentences?
 python -m voice_matching.demo                       # list audio devices + live mic recognition loop
 
+# --- ESP32 / G-code output ---
+python serial_test.py /dev/ttyUSB0                  # prove the USB serial link in isolation
+python main.py --text --script "e2e4,e7e5" --serial /dev/ttyUSB0   # stream real G-code to the ESP32
+# (without --serial, planned G-code is printed as [SERIAL-STUB] lines instead of sent)
+
 # --- Tests ---
 python -m pytest -q                                 # whole suite (a Stockfish-less box skips 1 test — fine)
 python -m pytest tests/test_voice_matching.py -q    # Role 1: phonetic matching
@@ -142,5 +147,8 @@ python -m pytest tests/ -q
 ## Status
 
 Voice input, chess AI, audio feedback, and motion planning (Role 3) are fully
-working. Only the ESP32/FluidNC hardware link (Role 4) is still a stub with a
-stable interface — its real implementation drops in without touching the game logic.
+working. The Pi-side serial sender is real too — `--serial <port>` streams the
+planned G-code to the ESP32 over USB (with a tolerant `ok`/`<Idle>` handshake).
+What's still pending on the hardware side (Role 4) is flashing FluidNC onto the
+ESP32 and its pin/motor/homing config; until then the bytes go out on the wire
+but nothing answers, which the link handles gracefully.

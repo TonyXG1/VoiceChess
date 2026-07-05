@@ -112,11 +112,32 @@ to pyttsx3 automatically, so the command line is identical on both machines. Wit
 either backend, every spoken line is also printed as `[SPEAK] ...`, so you can
 follow the dialogue over SSH even when you can't hear the speaker.
 
-## 6. Later (not needed yet)
+## 6. ESP32 / G-code output over USB
 
-- ESP32 serial link: `sudo usermod -aG dialout $USER` (then log out/in) so Python
-  can open `/dev/ttyUSB0` without sudo. The `pyserial` package is already in
-  requirements.txt.
+The Pi-side serial sender is real (`orchestrator/serial_link.py`); it streams the
+planned G-code to the ESP32 and reads back FluidNC's `ok`/`<Idle>` acks. The
+handshake is tolerant — if nothing answers yet (FluidNC not flashed), the bytes
+still go out and reads just time out, logged, never fatal.
+
+```bash
+# One-time: let Python open the port without sudo (then log out/in):
+sudo usermod -aG dialout $USER
+
+# Plug the ESP32 in over micro-USB and find its device node:
+ls /dev/ttyUSB* /dev/ttyACM*        # usually /dev/ttyUSB0 (CP2102/CH340) or /dev/ttyACM0
+
+# Prove the link in isolation (sends 2 safe lines, prints replies):
+python serial_test.py /dev/ttyUSB0
+
+# Run the whole game and stream its G-code to the ESP32:
+python main.py --text --script "e2e4,e7e5,g1f3" --serial /dev/ttyUSB0
+```
+
+`pyserial` is already in requirements.txt. Without `--serial`, planned G-code is
+printed as `[SERIAL-STUB]` lines instead of sent (the default, and what CI/tests use).
+
+## 7. Later (not needed yet)
+
 - Piper TTS (nicer voice than espeak): needs the `piper` binary + a `.onnx` voice
   model, then `--tts piper` with `PIPER_MODEL=/path/voice.onnx`. Skip until the
   espeak voice becomes annoying.

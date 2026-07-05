@@ -14,6 +14,7 @@ Run it:
     python main.py --text                           # force text mode (type your moves)
     python main.py --text --script "e2e4,e7e5,g1f3" # scripted, fully hardware-free
     python main.py --tts pyttsx3                    # real spoken audio
+    python main.py --text --serial /dev/ttyUSB0     # stream real G-code to the ESP32
 """
 
 from __future__ import annotations
@@ -141,6 +142,11 @@ def main() -> None:
                    help="audio backend (default: print only)")
     p.add_argument("--skill", type=int, default=5, help="Stockfish skill level 0-20")
     p.add_argument("--think", type=float, default=0.5, help="Stockfish seconds per move")
+    p.add_argument("--serial", default=None,
+                   help="ESP32 serial port for REAL G-code output (e.g. /dev/ttyUSB0, "
+                        "COM5). Omit for dry-run (prints the G-code instead of sending).")
+    p.add_argument("--baud", type=int, default=115200,
+                   help="serial baud rate (FluidNC default 115200)")
     args = p.parse_args()
 
     # Fail loudly NOW, not mid-game: the AI turn cannot work without Stockfish.
@@ -158,12 +164,17 @@ def main() -> None:
     engine.speaker = get_speaker(args.tts)
     voice, kind = get_voice_source(args.text, args.script)
 
-    print(f"=== VoiceChess ({kind} voice, stockfish: {stockfish}) ===")
+    serial = SerialLink(port=args.serial, baud=args.baud)
+    wire = f"serial: {args.serial}@{args.baud}" if args.serial else "serial: dry-run (print)"
+    print(f"=== VoiceChess ({kind} voice, stockfish: {stockfish}, {wire}) ===")
     print("Human = White, AI (Stockfish) = Black.")
 
     orch = Orchestrator(engine=engine, voice=voice,
-                        planner=MotionPlanner(), serial=SerialLink())
-    orch.run(max_turns=args.turns)
+                        planner=MotionPlanner(), serial=serial)
+    try:
+        orch.run(max_turns=args.turns)
+    finally:
+        serial.close()
 
 
 if __name__ == "__main__":
