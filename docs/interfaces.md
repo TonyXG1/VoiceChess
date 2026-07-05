@@ -49,12 +49,21 @@ impossible move ever reaching the robot arm.
 Your `listen_for_move(legal_moves, pieces)` receives exactly what
 `eng.legal_moves()` returns plus `eng.legal_moves_pieces()` — a map of each
 UCI move to the spoken word of the piece that moves (`{"e2e4": "pawn",
-"g1f3": "knight", ...}`) — and returns one of those strings or
-`"unrecognized"`. The piece map restricts phrase generation so an utterance
-naming one piece can never match a different piece's move ("knight to g3"
-must not match the pawn move g2g3). `pieces` is optional (`None` = accept any
-piece word, the old behavior). `MockVoice` in this package implements the
-identical signature for testing without a mic.
+"g1f3": "knight", ...}`) — and returns a **`MatchResult`**
+(`from voice_matching import MatchResult`):
+
+- `status="legal"`, `move=<uci from legal_moves>` — play it.
+- `status="illegal"`, `move=<uci>` — a well-formed move that is NOT legal
+  right now (matched against Role 1's full move superset); the orchestrator
+  announces it by name and re-listens.
+- `status="unrecognized"`, `move=None` — noise/silence/ambiguity; generic
+  retry.
+
+The piece map restricts phrase generation so an utterance naming one piece
+can never match a different piece's move ("knight to g3" must not match the
+pawn move g2g3). `pieces` is optional (`None` = accept any piece word).
+`MockVoice` in this package implements the identical signature and return
+contract for testing without a mic.
 
 ## For Role 3 (Motion) and Role 4 (Hardware)
 
@@ -71,8 +80,8 @@ Role 2 never emits G-code and never touches the serial port - that's your lane.
 
 ## For Role 5 (Orchestrator)
 
-You own the turn loop and the *timing* of every call above. `orchestrator_demo.py`
-is a runnable reference of that loop (LISTEN -> CONFIRM -> MOVE -> THINK -> MOVE).
+You own the turn loop and the *timing* of every call above. `orchestrator/state_machine.py`
+(run via `main.py`) is the runnable turn loop (LISTEN -> CONFIRM -> MOVE -> THINK -> MOVE).
 Role 2 exposes capabilities; it never decides when they run.
 
 ## TTS (audio output)

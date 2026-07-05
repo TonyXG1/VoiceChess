@@ -47,8 +47,8 @@ the motors. You don't have to validate anything yourself, just check ok.
 
 ## The turn loop, in order
 
-This is the sequence for one full turn. I already wrote this exact loop in
-orchestrator_demo.py so you can copy it or just read it, but here it is in words:
+This is the sequence for one full turn. This exact loop is now the real turn state
+machine in orchestrator/state_machine.py (driven by main.py), but here it is in words:
 
 1. Ask legal_moves() for the current move list.
 2. Give that list to the voice guy's listen_for_move(list). He gives you back one
@@ -75,16 +75,15 @@ You two already line up because you both use the same move format (those "e2e4"
 strings, the format is called UCI). That's literally the only thing that crosses
 between his part and mine. I give a list, he returns one item from the list.
 
-My demo connector finds his code on its own if his voiceChess-main folder is
-sitting next to mine, or if you set an environment variable VOICECHESS_PATH to
-where his folder is. If his code or his mic or his voice model isn't there, the
-connector swaps in a fake voice that just picks moves itself, so the whole thing
-still runs and you can test the plumbing without his hardware. It prints a line
-telling you which one it used, real or fake.
+That integration is now done: main.py wires my ChessEngine to his VoiceMatchEngine
+through the orchestrator. If his mic or voice model isn't there, `python main.py
+--text` swaps in a typed/scripted stand-in (TextVoice) that runs the whole matching
+pipeline without hardware, so you can test the plumbing anytime. It prints a line
+telling you which voice source it used, live or text.
 
-When you build the real integrated program, you don't have to use my connector at
-all. You can just import ChessEngine and call it directly in your own loop. The
-connector is really just a working example of that loop.
+If you ever want to drive the engine yourself, you don't need the orchestrator at
+all — just import ChessEngine and call it directly in your own loop (see the code
+example below).
 
 
 ## Where the robot arm goes
@@ -114,28 +113,29 @@ lines are gone, it's actually talking out loud.
 
 You need Python and, for the computer opponent, the Stockfish program.
 
-    pip install python-chess pytest
+    pip install -r requirements.txt
 
 Get Stockfish. On the Pi:
 
     sudo apt install stockfish
 
-On Windows, download it from stockfishchess.org and put the .exe next to
-orchestrator_demo.py, renamed to stockfish.exe.
+On Windows, run `winget install --id Stockfish.Stockfish -e`, or download it from
+stockfishchess.org and drop stockfish.exe in the repo root (next to main.py).
 
 Fast check that everything works (no mic needed, a few seconds):
 
-    python3 -m pytest -q
+    python -m pytest -q
 
-You want "15 passed". "14 passed, 1 skipped" just means Stockfish isn't installed
+You want all tests passing. A "1 skipped" line just means Stockfish isn't installed
 yet, that's fine, only the opponent test skipped.
 
-Watch a full game run itself, fake voice picking moves, Stockfish answering:
+Watch a full game run itself, scripted moves feeding the real matcher, Stockfish
+answering (no mic, no hardware):
 
-    python3 orchestrator_demo.py --mock --script e2e4,f1c4,d1h5,h5f7 --skill 1 --think 0.1
+    python main.py --text --script "e2e4,f1c4,d1h5,h5f7" --skill 1 --think 0.1
 
-Add --tts espeak to that line to hear it talk. Drop --mock (once his stuff is set
-up) to use the real microphone.
+Add --tts espeak to that line to hear it talk. Drop --text (once the mic + Vosk
+model are set up) to use the real microphone.
 
 
 ## A tiny code example, if you'd rather just call it
@@ -177,9 +177,10 @@ up) to use the real microphone.
 - chess_ai/engine.py - the brain (rules, Stockfish, spoken text). The main thing.
 - chess_ai/speech.py - the talking part (print, espeak, piper).
 - chess_ai/mock_voice.py - the fake voice for testing without a mic.
-- orchestrator_demo.py - the full loop, working, copy or read it.
+- orchestrator/state_machine.py - the full turn loop, wired up by main.py.
+- main.py - the entry point that builds and runs everything.
 - speak_test.py - just checks audio works on its own.
-- interfaces.md - the short technical cheat sheet for the calls.
+- docs/interfaces.md - the short technical cheat sheet for the calls.
 - tests/ - the automatic tests.
 
 That's everything. If something doesn't line up when you merge, the first place

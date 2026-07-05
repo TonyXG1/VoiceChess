@@ -31,12 +31,45 @@ to what was heard. The spoken read-back catches the rare miss.
 |---|---|
 | `voice_matching/` | Vosk STT + phonetic matching (Role 1) |
 | `chess_ai/` | Rules authority, Stockfish opponent, text-to-speech (Role 2) |
-| `motion/` | Square→XY motion planning — **stub** until Role 3's code lands |
-| `orchestrator/` | Turn state machine + ESP32 serial link (**stub** until Role 4) |
+| `motion/` | Square→XY→G-code motion planning (Role 3) |
+| `orchestrator/` | Turn state machine (Role 5) + ESP32 serial link (**stub** until Role 4) |
 | `main.py` | Entry point — wires the modules together |
 | `speak_test.py` | Standalone audio check — run this first on new hardware |
-| `docs/` | `pi-setup.md` (Pi runbook), `interfaces.md`, `changelog.md` |
+| `docs/` | `pi-setup.md` (Pi runbook), `interfaces.md`, `agents.md`, `changelog.md`, per-role READMEs |
 | `tests/` | pytest suites |
+
+## Essential commands
+
+Everything runs from the repo root. Stockfish must be installed (see [Setup](#setup)).
+
+```bash
+# --- Setup (once) ---
+pip install -r requirements.txt                    # Python deps (not Stockfish — that's a system binary)
+pip install pyttsx3                                 # optional: spoken audio on Windows
+
+# --- Run the game ---
+python main.py                                      # live mic if available, else auto-falls back to text
+python main.py --text                               # force text mode — type your moves, no mic/model needed
+python main.py --text --script "e2e4,e7e5,g1f3"     # scripted, fully hardware-free (best quick smoke test)
+python main.py --tts espeak                         # live mic + spoken feedback (espeak-ng / Windows voice)
+python main.py --text --tts espeak                  # typed input + spoken feedback
+
+# tunables (combine with any of the above):
+#   --skill 0-20   opponent strength (default 5)
+#   --think 0.5    AI seconds per move
+#   --turns 40     max turns (demo safety limit)
+#   --tts print|espeak|pyttsx3|piper   audio backend (default print — just prints [SPEAK] lines)
+
+# --- Audio & voice hardware checks ---
+python speak_test.py                                # do you hear the spoken test sentences?
+python -m voice_matching.demo                       # list audio devices + live mic recognition loop
+
+# --- Tests ---
+python -m pytest -q                                 # whole suite (a Stockfish-less box skips 1 test — fine)
+python -m pytest tests/test_voice_matching.py -q    # Role 1: phonetic matching
+python -m pytest tests/test_chess_ai.py -q          # Role 2: rules + Stockfish + TTS fallback
+python -m pytest tests/test_motion.py -q            # Role 3: square→mm + G-code planner
+```
 
 ## Setup
 
@@ -108,6 +141,6 @@ python -m pytest tests/ -q
 
 ## Status
 
-Voice input, chess AI, and audio feedback are fully working. Motion planning
-(Role 3) and the ESP32/FluidNC hardware link (Role 4) are stubs with stable
-interfaces — their real implementations drop in without touching the game logic.
+Voice input, chess AI, audio feedback, and motion planning (Role 3) are fully
+working. Only the ESP32/FluidNC hardware link (Role 4) is still a stub with a
+stable interface — its real implementation drops in without touching the game logic.

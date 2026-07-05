@@ -40,16 +40,21 @@ def main():
         print("\nRefer to the README.md for step-by-step setup instructions.")
         sys.exit(1)
 
-    # 3. Define test moves to recognize
-    test_moves = ["e2e4", "g1f3", "e1g1", "d7d8q"]
-    print(f"We will test speech recognition against these valid moves: {test_moves}")
+    # 3. Define test moves to recognize (All 20 legal starting moves for White)
+    test_moves = [
+        "a2a3", "a2a4", "b2b3", "b2b4", "c2c3", "c2c4", "d2d3", "d2d4",
+        "e2e3", "e2e4", "f2f3", "f2f4", "g2g3", "g2g4", "h2h3", "h2h4",
+        "b1a3", "b1c3", "g1f3", "g1h3"
+    ]
+    print(f"We will test speech recognition against the 20 legal opening moves for White:\n{test_moves}")
     print("Specifically, you can test speaking:")
     print("  - 'e2 e4' or 'pawn to e4'")
     print("  - 'g1 f3' or 'knight to f3'")
-    print("  - 'kingside castle' or 'short castle'")
-    print("  - 'd7 d8 queen' or 'd7 to d8 promote queen'")
+    print("  - 'b1 c3' or 'knight b1 to c3'")
+    print("\nAfter your move is understood, it will be read back to you.")
+    print("Say 'yes' to confirm it, or 'no' to discard it and speak your move again.")
     print("\nStarting microphone capture...")
-    print("Listening (speak now, you have 5 seconds)...")
+    print("Listening (speak now)...")
 
     try:
         result = engine.listen_for_move(test_moves)

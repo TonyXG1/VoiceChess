@@ -61,12 +61,38 @@ Keep it that way end to end. SAN (e.g. "Nf3") is only for human-facing speech/re
 
 ## Repo layout & module ownership
 
-    voice_matching/   Role 1 — Vosk STT + phonetic matching. match_text() is the pure
-                      text->UCI matcher; listen_for_move() wraps it with live audio.
+    voice_matching/   Role 1 — Vosk STT + phonetic matching. match_text() is the
+                      pure text classifier; listen_for_move() wraps it with live
+                      audio plus a spoken yes/no confirmation layer (config.
+                      REQUIRE_CONFIRMATION; prompts route through the
+                      orchestrator's TTS via on_prompt). Both return a
+                      MatchResult: status "legal" | "illegal" | "unrecognized"
+                      (+ the move for legal/illegal — a UCI, or for illegal a
+                      piece@dest pseudo like "knight@c3" when no origin was
+                      spoken; describe_move renders both). Illegal detection
+                      matches against a lazily-cached superset of all ~4k
+                      square-pair moves (lean qualified phrases only — full
+                      phrase sets for the superset would be ~8M strings and
+                      would tie every "pawn to e4"-style utterance) plus one
+                      piece@dest pseudo-move per (piece, square); pseudos for
+                      currently-legal pairs are skipped so they never shadow
+                      the legal match. Legal moves keep full piece-aware
+                      phrases. Matching is strict: confidence threshold 0.90 +
+                      AMBIGUITY_MARGIN runner-up gap (with a float epsilon:
+                      exact-margin gaps must pass) + partial-[unk] reject.
+                      Promotion UCIs are not in the superset (illegal
+                      promotions -> unrecognized). "eight" must NEVER be an
+                      h-file homophone — it pulls spoken "a" into the h-file
+                      via the Vosk grammar ("pawn to a3" once silently played
+                      h2h3); it is a rank-8 word only.
     chess_ai/         Role 2 — rules authority (python-chess), Stockfish AI, TTS
                       (get_speaker falls back to PrintSpeaker on any failure).
-    motion/           Role 3 — STUB. Real square->mm + G-code generation lands here
-                      later; only MotionPlanner.plan() signature is fixed.
+    motion/           Role 3 — REAL (merged 2026-07-05). square->mm + G-code for
+                      standard/capture/castling/en-passant/promotion moves.
+                      plan(uci, move_type, is_capture) returns ONE newline-joined
+                      G-code string; the orchestrator splitlines() it for serial.
+                      The orchestrator derives move_type/is_capture from Role 2's
+                      board BEFORE applying the move (_classify_move).
     orchestrator/     Role 5 — the turn state machine (state_machine.py) and the
                       ESP32 serial link (serial_link.py — STUB until Role 4's
                       firmware exists; will become pyserial + ok/<Idle> polling).
@@ -83,9 +109,11 @@ Every result returns to the orchestrator before the next call goes out. Turn loo
 
 Only listen during LISTEN — never trigger audio capture during MOVE/THINK.
 
-Roles 3 (motion planning) and 4 (ESP32/FluidNC config + hardware build) are other team
-members' repos, not yet merged — don't invent their logic, keep the stubs' interfaces
-stable so their code drops in.
+Role 3's real planner and Role 1's 0.2.0 update are merged (their raw clones were
+merge inputs only and have been deleted; their history lives on their own remotes).
+Role 4 (ESP32/FluidNC config + hardware build) is still another team member's work —
+serial_link.py stays a stub; don't invent its logic. Don't change Role 1/2/3 logic
+when integrating.
 
 ## Runtime facts
 
@@ -126,15 +154,16 @@ final assignment with whoever owns Role 3/4 before treating it as locked.)
 
 - **Board/square dimensions**: BOM lists the board as ~50x50cm overall, which doesn't
   cleanly match the 50mm-square / 400mm-board example math used elsewhere for the
-  square->mm coordinate formula. Confirm the real square size with Role 3/4 before
-  hardcoding coordinates anywhere.
+  square->mm coordinate formula. Role 3's merged planner now HARDCODES 50mm squares
+  (25mm offsets, graveyard at X420 Y200, queen reserve at X480 Y200) — verify against
+  the physical build before the first powered run.
 - **Kinematics**: plain Cartesian dual-rail vs. CoreXY/H-bot. A cross-shaft link
   between the two base X-rails (to prevent gantry racking) is planned regardless of
   which is chosen.
-- Captures need an off-board **graveyard zone** (recommended: a sequential single-file
-  strip along one long side of the board, within the XY travel envelope). Promotion is
-  the one move that ADDS a piece — keep a small reserve to fetch from, or exclude
-  promotion from the demo entirely; decide before Role 3 builds the special-move logic.
+- Captures/promotion: Role 3's planner drops EVERY captured piece on the single point
+  (X420, Y200) — pieces will physically pile up there; a sequential single-file strip
+  is still the recommended evolution. Promotion always fetches a queen from one
+  reserve point (X480, Y200) regardless of the promotion piece in the UCI move.
 
 ## Working conventions
 

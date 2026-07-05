@@ -10,18 +10,23 @@ Rules this module enforces:
     (voice.listen_for_move is only ever called at the top of the human turn).
   * The UCI string is the only representation crossing module boundaries.
 
-The voice source needs one method:  listen_for_move(legal_moves) -> uci | "unrecognized"
+The voice source needs one method:
+    listen_for_move(legal_moves, pieces, on_prompt) -> MatchResult | None
 so VoiceMatchEngine, MockVoice, and main.py's TextVoice are interchangeable.
-A voice source may also return "quit" (scripted input exhausted / user exit)
-to end the game loop cleanly.
+MatchResult.status is "legal" | "illegal" | "unrecognized"; None means the
+voice source is exhausted (scripted input ran out / user exit) and ends the
+game loop cleanly.
 """
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Tuple
 
-from chess_ai import ChessEngine, MoveResult
+import chess
+
+from chess_ai import ChessEngine
 from motion import MotionPlanner
+from voice_matching.phonetics import describe_move
 from .serial_link import SerialLink
 
 
@@ -35,25 +40,38 @@ class Orchestrator:
 
     # ------------------------------ MOVE state ------------------------------ #
 
-    def _execute_motion(self, res: MoveResult) -> None:
+    def _classify_move(self, uci: str) -> Tuple[str, bool]:
+        """(move_type, is_capture) for Role 3's planner, in its vocabulary.
+
+        Must run BEFORE the move is applied -- castling/en-passant/capture are
+        properties of the move in the CURRENT position. Read-only query
+        against Role 2's board (the documented source of truth); en passant
+        in particular cannot be derived from the post-move SAN/UCI alone.
+        """
+        try:
+            move = chess.Move.from_uci(uci)
+            board = self.engine.board
+            if board.is_castling(move):
+                return "castling", False
+            if board.is_en_passant(move):
+                return "en_passant", True
+            if move.promotion:
+                return "promotion", board.is_capture(move)
+            return "standard", board.is_capture(move)
+        except ValueError:
+            # Malformed UCI: apply() will reject it; flags are never used.
+            return "standard", False
+
+    def _execute_motion(self, uci: str, move_type: str, is_capture: bool) -> None:
         """Physically execute an applied move: plan G-code, stream it, wait.
 
         Used for BOTH the human and the AI move -- the gantry moves the
         pieces for both sides.
         """
-        uci = res.uci
-        special = None
-        if res.san.startswith("O-O"):
-            special = "castle"
-        elif len(uci) == 5:
-            special = "promotion"
-        # NOTE: en passant currently reads as a plain capture ("exd6"); when
-        # Role 3's real planner lands, chess_ai needs to expose an en-passant
-        # flag so the planner clears the right square.
-        capture = "x" in res.san
-
-        gcode = self.planner.plan(uci[:2], uci[2:4], capture=capture, special=special)
-        self.serial.send(gcode)  # blocks until motion done (stub: prints)
+        gcode = self.planner.plan(uci, move_type=move_type, is_capture=is_capture)
+        # Role 3 returns one newline-joined G-code string; the serial link
+        # streams line by line.
+        self.serial.send(gcode.splitlines())  # blocks until motion done (stub: prints)
 
     # ------------------------------ game loop ------------------------------- #
 
@@ -76,17 +94,33 @@ class Orchestrator:
             legal: List[str] = eng.legal_moves()
             pieces = eng.legal_moves_pieces()
             print(f"\n--- Turn {turn} (White) --- {len(legal)} legal moves")
-            uci = self.voice.listen_for_move(legal, pieces)
+            # Role 1's confirmation prompts ("I understood ... say yes/no")
+            # are routed through Role 2's speaker so they are spoken aloud.
+            result = self.voice.listen_for_move(legal, pieces, on_prompt=eng.speak)
 
-            if uci == "quit":
+            if result is None:
                 print("[orchestrator] voice source exhausted / quit - ending game.")
                 break
 
-            # PARSE: Role 1 already matched to a legal move, or gave up.
-            if uci == "unrecognized":
+            # PARSE: Role 1 classified the utterance -- react per status.
+            if result.status == "unrecognized":
                 eng.speak("I didn't catch that. Please say your move again.")
                 turn -= 1                     # stay in LISTEN; don't burn a turn
                 continue
+
+            if result.status == "illegal":
+                # Heard clearly, but the move can't be played right now. Name
+                # it (square-based wording -- SAN doesn't exist for illegal
+                # moves) so the player knows they were understood.
+                eng.speak(f"That move, {describe_move(result.move)}, "
+                          f"isn't legal right now. Try again.")
+                turn -= 1                     # stay in LISTEN
+                continue
+
+            uci = result.move
+
+            # Classify for motion BEFORE applying (needs the pre-move board).
+            move_type, is_capture = self._classify_move(uci)
 
             # Apply via Role 2 (rules authority; nothing illegal passes).
             res = eng.apply(uci)
@@ -99,7 +133,7 @@ class Orchestrator:
             eng.speak(f"You said {res.readback}")
 
             # MOVE(human): Role 3 plans, Role 4 executes. No listening here.
-            self._execute_motion(res)
+            self._execute_motion(res.uci, move_type, is_capture)
 
             if res.status.is_game_over:
                 break
@@ -107,11 +141,12 @@ class Orchestrator:
             # ============================= AI TURN ============================== #
             # THINK: ask Stockfish (does not apply yet).
             ai_uci = eng.ai_move()
+            ai_move_type, ai_is_capture = self._classify_move(ai_uci)
             ai_res = eng.apply(ai_uci)
             eng.speak(f"A I plays {ai_res.readback}")
 
             # MOVE(AI): same plan -> stream path as the human move.
-            self._execute_motion(ai_res)
+            self._execute_motion(ai_res.uci, ai_move_type, ai_is_capture)
 
             if ai_res.status.is_game_over:
                 break

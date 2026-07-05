@@ -6,7 +6,7 @@ contains game logic -- it only decides WHICH implementations to wire up:
 
     voice:   VoiceMatchEngine (live mic)  |  TextVoice (typed/scripted, no hardware)
     chess:   ChessEngine (python-chess + Stockfish)
-    motion:  MotionPlanner (stub until Role 3 lands)
+    motion:  MotionPlanner (Role 3's real square->mm + G-code planner)
     serial:  SerialLink (stub until Role 4's ESP32 exists)
 
 Run it:
@@ -28,7 +28,8 @@ from typing import List, Optional
 from chess_ai import ChessEngine, get_speaker
 from motion import MotionPlanner
 from orchestrator import Orchestrator, SerialLink
-from voice_matching.engine import match_text
+from voice_matching.engine import (CASTLE_AMBIGUITY_HINT, MatchResult,
+                                   is_ambiguous_castle, match_text)
 
 
 class TextVoice:
@@ -63,25 +64,33 @@ class TextVoice:
         return words
 
     def listen_for_move(self, legal_moves: List[str],
-                        pieces: Optional[dict] = None) -> str:
+                        pieces: Optional[dict] = None,
+                        on_prompt=None) -> Optional[MatchResult]:
+        # Returns None when the input source is exhausted (script done, typed
+        # quit/exit, EOF) -- the orchestrator ends the game loop on None.
+        # on_prompt (Role 1's spoken-prompt hook) is used only for the
+        # ambiguous-castle hint; typed input is otherwise its own confirmation.
         if self.script is not None:
             if not self.script:
-                return "quit"                       # script exhausted: end cleanly
+                return None                         # script exhausted: end cleanly
             transcript = self.script.pop(0)
             print(f"[TEXT-VOICE] heard (scripted): {transcript!r}")
         else:
             try:
                 transcript = input("[TEXT-VOICE] say your move > ")
             except EOFError:
-                return "quit"
+                return None
             if transcript.strip().lower() in ("quit", "exit"):
-                return "quit"
+                return None
 
         transcript = self._as_transcript(transcript)
         print(f"[TEXT-VOICE] transcript: {transcript!r}")
-        uci = match_text(transcript, legal_moves, pieces)
-        print(f"[TEXT-VOICE] matched: {uci}")
-        return uci
+        result = match_text(transcript, legal_moves, pieces)
+        if result.status == "unrecognized" and is_ambiguous_castle(transcript, legal_moves, pieces):
+            (on_prompt or print)(CASTLE_AMBIGUITY_HINT)
+        print(f"[TEXT-VOICE] matched: {result.status}"
+              + (f" ({result.move})" if result.move else ""))
+        return result
 
 
 def find_stockfish() -> Optional[str]:

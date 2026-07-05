@@ -135,10 +135,22 @@ def test_mock_voice_matches_role1_contract():
     eng = ChessEngine()
     voice = MockVoice(script=["e2e4"])
     legal = eng.legal_moves()
-    uci = voice.listen_for_move(legal)              # same signature as Role 1
-    assert uci in legal
-    assert eng.apply(uci).ok
+    res = voice.listen_for_move(legal)              # same signature as Role 1
+    assert res.status == "legal"
+    assert res.move in legal
+    assert eng.apply(res.move).ok
 
 def test_mock_voice_unrecognized():
     voice = MockVoice(unrecognized_every=1)
-    assert voice.listen_for_move(["e2e4"]) == "unrecognized"
+    res = voice.listen_for_move(["e2e4"])
+    assert res.status == "unrecognized"
+    assert res.move is None
+
+def test_mock_voice_scripted_illegal_move():
+    # A well-formed scripted move that isn't legal is the "illegal" case;
+    # garbage stays "unrecognized".
+    voice = MockVoice(script=["e2e5", "banana"])
+    res = voice.listen_for_move(["e2e4", "g1f3"])
+    assert res.status == "illegal" and res.move == "e2e5"
+    res = voice.listen_for_move(["e2e4", "g1f3"])
+    assert res.status == "unrecognized"
