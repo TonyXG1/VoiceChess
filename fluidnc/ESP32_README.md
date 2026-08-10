@@ -1,0 +1,502 @@
+# ESP32 / FluidNC — Setup, Debug and Handover
+
+**Status as of 2026-08-10:** the full software path is verified end to end.
+The Pi sends G-code over USB serial, FluidNC parses it, and the motion
+planner's coordinates arrive intact. Everything remaining is hardware.
+
+Last verified command sequence:
+
+```
+$X                  -> ok
+G91
+G0 X10              -> ok
+?                   -> <Idle|MPos:10.000,0.000,187.002,0.000|FS:0,0>
+G90
+```
+
+X advanced by exactly 10.000 mm as commanded. Nothing is wired to the
+drivers yet, so no motor moved — this is the controller's internal
+position counter, which is exactly what we wanted to prove.
+
+---
+
+## 1. The architecture in one line
+
+```
+Pi (Python)  ->  USB serial /dev/ttyUSB0 @115200  ->  ESP32 (FluidNC)  ->  4x TB6600  ->  motors
+```
+
+The Pi owns everything intelligent: speech recognition, chess rules,
+Stockfish, motion planning. The ESP32 owns only real-time step pulse
+generation. The interface between them is plain G-code text, one line at a
+time, with an `ok` acknowledgement per line.
+
+---
+
+## 2. What is on the ESP32 right now
+
+| Item | Value |
+|---|---|
+| Chip | ESP32-D0WD-V3 rev 3.1, 40 MHz crystal |
+| MAC | 8c:94:df:90:d2:90 |
+| Firmware | FluidNC v4.0.3, `esp32-wifi` build |
+| Console | 115200 8N1 on `/dev/ttyUSB0` (CP2102) |
+| Filesystem | LittleFS, holds `config.yaml` |
+| WiFi | AP mode, SSID `FluidNC`, password `12345678`, `http://192.168.0.1` |
+| Axes | 4 — X (2 ganged motors), Y, Z, A (claw) |
+
+---
+
+## 3. The new folder: `~/fluidnc-v4.0.3/fluidnc-v4.0.3-posix`
+
+This is the official FluidNC v4.0.3 release bundle, unzipped on the Pi. It
+is **not** part of the git repo — it is a downloaded toolkit. It contains
+the firmware binaries and the flashing/terminal scripts.
+
+```
+cd ~/fluidnc-v4.0.3/fluidnc-v4.0.3-posix
+ls
+```
+
+```
+bt/                 common/             wifi/               wifi_s3/
+install-wifi.sh     install-fs.sh       install-bt.sh       erase.sh
+fluidterm.sh        tools.sh            checksecurity.sh    HOWTO-INSTALL.txt
+```
+
+What matters:
+
+- **`fluidterm.sh`** — the serial terminal. This is your daily driver.
+- **`wifi/`** — the firmware binaries for our build (`bootloader.bin`,
+  `firmware.bin`, `partitions.bin`, `littlefs.bin`).
+- **`install-wifi.sh` / `install-fs.sh`** — flashing scripts. **They do not
+  work as-is on this Pi** (see section 8). Flash manually instead.
+
+---
+
+## 4. Daily commands — the ones you actually need
+
+### Open a terminal to the ESP32
+
+```bash
+cd ~/fluidnc-v4.0.3/fluidnc-v4.0.3-posix
+./fluidterm.sh
+```
+
+Choose port `2` (`/dev/ttyUSB0`).
+
+| Key | Action |
+|---|---|
+| `Ctrl-]` or `Ctrl-Q` | quit |
+| `Ctrl-U` | upload a file to the ESP32 |
+| `Ctrl-R` | reset the board |
+| `Ctrl-W` | clear screen |
+
+Alternative terminal: `screen /dev/ttyUSB0 115200`, exit with `Ctrl-A k y`.
+
+### Free the serial port
+
+**Only one process can hold `/dev/ttyUSB0` at a time.** This is the single
+most common source of confusion. If a script says the port is busy, or
+fluidterm shows nothing, run:
+
+```bash
+fuser -v /dev/ttyUSB0     # who has it
+fuser -k /dev/ttyUSB0     # kill them
+screen -ls                # check for stale screens
+```
+
+Do **not** run two terminals on the port, and do **not** use
+`cat /dev/ttyUSB0` — two readers split the byte stream and each gets half.
+
+### Essential FluidNC commands
+
+```
+$X                      clear Alarm state (needed after every boot)
+?                       status report (send as a single char, no Enter)
+$$                      list all settings
+$CD                     dump the ACTIVE config as YAML
+$I                      firmware version
+$Help                   list available commands for this build
+$LocalFS/List           list files on the ESP32
+$LocalFS/Delete=config.yaml    delete the config (recovery, see section 7)
+$Bye                    reboot
+$C                      toggle check mode (parse G-code, move nothing)
+$H                      run homing cycle
+$J=G91 X10 F500         jog 10mm relative — cancellable, safe
+```
+
+Realtime bytes — sent as raw characters, no Enter, no `ok` reply:
+
+| Byte | Effect |
+|---|---|
+| `?` | status report |
+| `!` | feed hold (decelerate and pause) |
+| `~` | resume |
+| `Ctrl-X` (0x18) | soft reset — **this is the software e-stop** |
+| `0x85` | cancel jog |
+
+### Run the software
+
+```bash
+cd ~/voicechess
+source venv/bin/activate
+
+# link test only
+python serial_test.py /dev/ttyUSB0
+
+# dry run — validates every planner scenario, moves nothing
+python dry_run.py /dev/ttyUSB0
+
+# full app, text input
+python main.py --text --script "e2e4,e7e5" --serial /dev/ttyUSB0 --no-home
+
+# full app, voice + speech
+python main.py --tts espeak --voice male --serial /dev/ttyUSB0 --no-home
+```
+
+**`--no-home` is mandatory until X and Y limit switches exist.** Without it
+`$H` runs, fails, and throws `ALARM:9 Homing Fail Approach`.
+
+---
+
+## 5. The config file
+
+Lives in the repo at `~/voicechess/fluidnc/config.yaml` and is uploaded to
+the ESP32's filesystem. Edit the repo copy, then upload.
+
+### THE PARSER RULE — read this before editing
+
+**FluidNC's YAML parser does not strip trailing comments.**
+
+```yaml
+pulse_us: 6           # this comment breaks the line
+```
+
+is read as the literal value `6           # this comment breaks the line`,
+and fails with `Expected an integer value`. Comments must be on their own
+line:
+
+```yaml
+# TB6600 optocouplers need >=5us
+pulse_us: 6
+```
+
+This cost us roughly two hours. Before every upload, verify:
+
+```bash
+grep -nE ':.*#' ~/voicechess/fluidnc/config.yaml
+```
+
+Any output (other than lines that themselves start with `#`) will fail.
+
+### Uploading
+
+```bash
+fuser -k /dev/ttyUSB0
+cd ~/fluidnc-v4.0.3/fluidnc-v4.0.3-posix
+./fluidterm.sh
+```
+
+Port `2`, wait for a clean prompt, then `Ctrl-U`:
+
+```
+Local file to send: /home/anton/voicechess/fluidnc/config.yaml
+File on FluidNC: config.yaml
+```
+
+Full absolute path, no quotes, no `~`. The destination name must be exactly
+`config.yaml`. Then `$Bye` and read the boot log.
+
+If the XMODEM transfer fails with `expected NAK, CRC, EOT or CAN`, the
+input buffer had leftover characters. Press `Ctrl-R`, let the boot output
+finish completely, press Enter to confirm a clean `ok`, then retry `Ctrl-U`.
+
+### Verifying it parsed
+
+The boot log is the validation. A good boot shows:
+
+```
+[MSG:INFO: FluidNC v4.0.3 ...]
+[MSG:INFO: Machine VoiceChess Gantry]
+[MSG:INFO: Stepping:RMT Pulse:6us ... Idle Delay:255ms]
+[MSG:INFO: Axis count 4]
+[MSG:INFO:     stepstick Step:gpio.13 Dir:gpio.14 Disable:NO_PIN]
+[MSG:INFO: AP started]
+```
+
+with **zero `[MSG:ERR:` lines**.
+
+Two failure signatures to recognise:
+
+- `Machine Default (Test Drive no I/O)` and `Axis count 3` — the config was
+  rejected entirely and FluidNC fell back to its built-in default. It will
+  still ack G-code perfectly while driving nothing.
+- `Critical error in main_init` — boot aborted. **WiFi never starts**, so
+  the AP disappears and serial is the only way back in.
+
+---
+
+## 6. Pin map
+
+| Function | GPIO | Notes |
+|---|---|---|
+| X motor0 step | 13 | moved off gpio.12 — see warning below |
+| X motor0 dir | 14 | |
+| X motor1 step | 16 | second ganged NEMA 23 |
+| X motor1 dir | 18 | may need `:low` to counter-rotate |
+| Y step | 27 | |
+| Y dir | 26 | |
+| Z step | 25 | |
+| Z dir | 33 | |
+| Z limit (top) | 17 | `gpio.17:low:pu` — the only switch we have |
+| A (claw) step | 19 | **needs hardware sign-off** |
+| A (claw) dir | 23 | **needs hardware sign-off** |
+
+### GPIO pins to never use on ESP32
+
+| Pins | Why |
+|---|---|
+| 0, 2, 5, 12, 15 | strapping pins — sampled at reset, affect boot mode |
+| 6–11 | wired to the SPI flash chip |
+| 1, 3 | UART0 TX/RX — the USB console |
+| 34–39 | input only, no output driver |
+
+**GPIO12 specifically:** it selects flash voltage at reset. Our TB6600s are
+wired common-anode (PUL+/DIR+/ENA+ to the 5V rail, ESP32 sinks through the
+optocoupler), so a driver on GPIO12 pulls it high at boot and the ESP32
+enters a **permanent boot loop** — silent at every baud, unrecoverable over
+WiFi, only fixable by physically removing the wire. X step was moved to
+gpio.13 for this reason. Do not move it back.
+
+Free and safe if more pins are needed: 4, 21, 22, 32.
+
+---
+
+## 7. Recovery procedures
+
+### The board is in Alarm
+
+```
+$X
+```
+
+Normal after every boot. Not a fault.
+
+### Homing fails with `ALARM:9 Homing Fail Approach`
+
+Expected until the Z motor and its limit switch are wired. The controller
+commanded Z toward the switch, nothing moved, and it searched past the end
+of travel. Use `--no-home`.
+
+### The FluidNC WiFi network disappeared
+
+The config crashed `main_init`, which runs **before** WiFi starts. Recover
+over serial:
+
+```
+$LocalFS/Delete=config.yaml
+$Bye
+```
+
+The board boots stock with `AP started`. Upload a corrected config through
+`http://192.168.0.1`, or over serial with `Ctrl-U`.
+
+**Note:** join the FluidNC AP from a laptop, not the Pi — joining it from
+the Pi drops your SSH session.
+
+### Garbage characters on the serial console
+
+Work through in order:
+
+1. Wrong baud — try 115200, then 74880 (ROM bootloader speed).
+2. Something else holds the port — `fuser -k /dev/ttyUSB0`.
+3. Boot loop — press RST while connected at 74880 and look for
+   `flash read err`, which means a strapping pin is held high.
+4. Chip health check, baud-independent:
+   ```bash
+   python -m esptool --port /dev/ttyUSB0 --chip esp32 chip-id
+   ```
+   If this prints chip type, MAC and crystal frequency, the hardware and
+   USB path are fine and the problem is firmware or config.
+
+### Full reflash (last resort)
+
+Only if the firmware itself is corrupt. `config.yaml` lives in the repo, so
+nothing is lost.
+
+```bash
+cd ~/fluidnc-v4.0.3/fluidnc-v4.0.3-posix
+source ~/voicechess/venv/bin/activate
+
+python -m esptool --port /dev/ttyUSB0 erase-flash
+
+python -m esptool --chip esp32 --port /dev/ttyUSB0 --baud 230400 \
+  --before default-reset --after hard-reset \
+  write-flash -z --flash-mode dio --flash-freq 80m --flash-size detect \
+  0x1000  wifi/bootloader.bin \
+  0x8000  wifi/partitions.bin \
+  0xe000  common/boot_app0.bin \
+  0x10000 wifi/firmware.bin
+
+python -m esptool --chip esp32 --port /dev/ttyUSB0 --baud 230400 \
+  --before default-reset --after hard-reset \
+  write-flash -z --flash-mode dio --flash-freq 80m --flash-size detect \
+  0x3d0000 wifi/littlefs.bin
+```
+
+Then verify the stock firmware boots readably **before** uploading the
+config. A fresh flash correctly complains that `config.yaml` is missing —
+what matters is that the complaint is legible English.
+
+---
+
+## 8. Why the install scripts don't work
+
+`install-wifi.sh` and `install-fs.sh` create their own virtualenv at
+`~/.fluidnc_venv`, install only `xmodem` and `pyserial` into it, then call
+`esptool.py` — which does not exist there, and which was renamed to
+`esptool` in esptool v5.x anyway. The scripts fail with
+`No module named esptool` **without flashing anything**.
+
+The manual commands in section 7 use the exact offsets the scripts print,
+and work. The scripts also end with `deactivate`, which kills your project
+virtualenv — reactivate with `source ~/voicechess/venv/bin/activate`.
+
+---
+
+## 9. TOMORROW — hardware tasks
+
+Ordered by what blocks what. Nothing here is software.
+
+### A. Before any power is applied
+
+**Set the TB6600 current DIP switches.** This is the only setting that can
+physically destroy a motor. Set at or just **below** the motor's rated
+current per phase.
+
+| Motor | Rated | Set to | S4 | S5 | S6 |
+|---|---|---|---|---|---|
+| NEMA 23 (X ×2, Y) | 2.8 A | 2.5 A | OFF | ON | ON |
+| NEMA 17 (Z, claw) | 1.5 A | 1.5 A | ON | ON | OFF |
+
+**VERIFY FIRST:** confirm the NEMA 23s are the 2.8 A part and not the 4.2 A
+high-torque variant. The TB6600 caps at 3.5 A continuous either way.
+Underpowering causes missed steps but no damage; overpowering cooks the
+motor.
+
+**Set microstepping to 1/16 on all four drivers** (S1 OFF, S2 OFF, S3 ON) =
+3200 pulses/rev. Every `steps_per_mm` in the config assumes this. A
+mismatch makes every distance wrong by the ratio of the two.
+
+**Wire TB6600 logic common-anode.** The ESP32 outputs 3.3 V; the TB6600
+expects 5 V logic. Tie all PUL+/DIR+/ENA+ to the 5 V rail and let the ESP32
+sink the negative terminals. No level shifter needed. Leave ENA unwired —
+`disable_pin` is `NO_PIN` in the config.
+
+**Do not double-power the ESP32** from USB and the buck converter at the
+same time. For bench testing, USB only.
+
+### B. Safety hardware — currently absent
+
+None of this exists yet and all of it should before a 24 V run:
+
+- Fused, switched IEC inlet
+- Blade fuse on the 24 V rail
+- Normally-closed mushroom e-stop
+
+Until the physical e-stop exists, `Ctrl-X` (0x18) over serial is the only
+stop, and it only works if a terminal is open.
+
+### C. Limit switches — the biggest remaining risk
+
+Only Z has a switch (gpio.17). **X and Y have none.** Without them there is
+no repeatable origin: after every power cycle the controller has no idea
+where square a1 is, so `$H` cannot establish the coordinate frame the
+Pi-side planner assumes.
+
+Wire X and Y limit switches, then in `config.yaml` for each axis:
+
+```yaml
+    soft_limits: true
+    homing:
+      cycle: 2
+    motor0:
+      limit_neg_pin: gpio.<pin>:low:pu
+```
+
+(Z uses `cycle: 1` so it retracts first; X and Y share `cycle: 2`.)
+
+Then set `must_home: true` under `start:` and drop `--no-home` from the
+`main.py` command line.
+
+**Bench workaround until then** — after each power-up, once:
+
+```
+$J=G91 X10 F1000        (jog until the claw is centred over a1)
+G10 L20 P1 X0 Y0        (declare that spot as work zero)
+```
+
+This drifts and is not a demo plan.
+
+### D. Calibrate steps_per_mm
+
+Current values are calculated, not measured. For each axis:
+
+```
+$J=G91 X100 F500
+```
+
+Measure the actual travel with calipers, then:
+
+```
+new_steps_per_mm = old * (commanded / measured)
+```
+
+**Z is the urgent one.** Its `50.930` assumes a module-1.0, 20-tooth
+rack-and-pinion:
+
+```
+travel per rev = pi * module * teeth = pi * 1.0 * 20 = 62.832 mm
+steps_per_mm   = 3200 / 62.832       = 50.930
+```
+
+If the actual pinion differs, every grip either misses the piece or drives
+the claw into the board. Measure before the claw goes near a real piece.
+
+### E. Direction and ganging checks
+
+- Jog each axis 10 mm and confirm it moves the expected direction. If
+  reversed, append `:low` to the `direction_pin` in the config — do **not**
+  swap motor wires.
+- **X has two ganged NEMA 23s.** Confirm both turn the *same* way before
+  bolting the gantry on. If they counter-rotate, add `:low` to motor1's
+  `direction_pin` (gpio.18).
+
+### F. Claw axis
+
+The claw is a **NEMA 17 on the fourth TB6600**, not a servo. The config
+declares it as axis `A` with `steps_per_mm: 8.889` (3200 / 360), so units
+read as degrees and `G0 A55` means 55 degrees of jaw travel.
+
+Confirm the gpio.19 / gpio.23 assignment against the physical pin table,
+then tune the open and closed angles against a real chess piece.
+
+---
+
+## 10. Recommended bring-up order tomorrow
+
+Each step isolates one thing. Do not skip ahead.
+
+1. Set all DIP switches (current + microstepping) — **before power**.
+2. Power on, `$X`, `?` — confirm `<Idle|MPos:0.000,0.000,0.000,0.000|...>`
+   with four numbers.
+3. `python dry_run.py /dev/ttyUSB0` — all scenarios accepted, nothing moves.
+4. Motors **disconnected**: stream a job, poll `?`, watch `MPos` walk to the
+   target and return to `Idle`.
+5. Reconnect **X only**: `$J=G91 X10 F500`. Check direction, check both
+   ganged motors agree.
+6. `$J=G91 X100 F500`, measure, correct `steps_per_mm`.
+7. Repeat 5–6 for Y, then Z, then A.
+8. Wire X/Y limit switches, update config, test `$H`.
+9. Set work zero over a1, run a full move with a real piece on the board.
