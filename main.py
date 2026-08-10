@@ -140,6 +140,8 @@ def main() -> None:
     p.add_argument("--turns", type=int, default=40, help="max turns (demo safety limit)")
     p.add_argument("--tts", default="print", choices=["print", "espeak", "pyttsx3", "piper"],
                    help="audio backend (default: print only)")
+    p.add_argument("--voice", default="female", choices=["female", "male"],
+                   help="narrator voice preset (espeak backend only)")
     p.add_argument("--skill", type=int, default=5, help="Stockfish skill level 0-20")
     p.add_argument("--think", type=float, default=0.5, help="Stockfish seconds per move")
     p.add_argument("--serial", default=None,
@@ -161,7 +163,7 @@ def main() -> None:
 
     engine = ChessEngine(stockfish_path=stockfish, skill_level=args.skill,
                          think_time=args.think)
-    engine.speaker = get_speaker(args.tts)
+    engine.speaker = get_speaker(args.tts, preset=args.voice)
     voice, kind = get_voice_source(args.text, args.script)
 
     serial = SerialLink(port=args.serial, baud=args.baud)

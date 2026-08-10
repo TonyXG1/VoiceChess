@@ -19,7 +19,15 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from typing import Optional, Protocol
+
+# Named narrator voices for the espeak backend. en-us+f2 / +m3 are espeak-ng's
+# built-in variants; rate/pitch are tuned for clear move calls, not naturalness.
+VOICE_PRESETS = {
+    "female": {"voice": "en-us+f2", "rate": 130, "pitch": 40},
+    "male":   {"voice": "en-us+m3", "rate": 130, "pitch": 40},
+}
 
 
 class Speaker(Protocol):
@@ -39,19 +47,29 @@ class EspeakSpeaker:
     The most reliable TTS on the Pi: no Python audio layer at all, just the
     system binary through ALSA. Needs:  sudo apt install espeak-ng
     """
-    def __init__(self, rate: int = 150, voice: str = "en") -> None:
+    def __init__(self, voice: str = "en-us+f2", rate: int = 130,
+                 pitch: int = 40, amplitude: int = 150,
+                 drain_pause: float = 0.3) -> None:
         self._bin = shutil.which("espeak-ng") or shutil.which("espeak")
         if not self._bin:
             raise RuntimeError("espeak-ng binary not found on PATH")
-        self._rate = rate
         self._voice = voice
+        self._rate = rate
+        self._pitch = pitch
+        self._amplitude = amplitude
+        self._drain_pause = drain_pause
 
     def say(self, text: str) -> None:
         print(f"[SPEAK] {text}")
         subprocess.run(
-            [self._bin, "-s", str(self._rate), "-v", self._voice, text],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
+            [self._bin, "-v", self._voice, "-s", str(self._rate),
+             "-p", str(self._pitch), "-a", str(self._amplitude), text],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
         )
+        # espeak-ng exits before ALSA has finished draining its buffer. Without
+        # this pause the tail of our own speaker is still playing when the next
+        # LISTEN starts, and the mic hears the robot instead of the player.
+        time.sleep(self._drain_pause)
 
 
 class Pyttsx3Speaker:
@@ -133,8 +151,12 @@ class PiperSpeaker:
                 pass
 
 
-def get_speaker(kind: str = "print", **kwargs) -> Speaker:
-    """Factory. kind = "print" | "espeak"/"pyttsx3" | "piper".
+def get_speaker(kind: str = "print", preset: Optional[str] = None,
+                **kwargs) -> Speaker:
+    """Factory. kind = "print" | "espeak" | "pyttsx3" | "piper".
+
+    `preset` names an entry in VOICE_PRESETS (espeak only); explicit kwargs win
+    over the preset, and an unknown preset name is simply ignored.
 
     Any failure to start a real backend falls back to PrintSpeaker so the game
     loop can never be killed by an audio problem.
@@ -142,12 +164,9 @@ def get_speaker(kind: str = "print", **kwargs) -> Speaker:
     kind = (kind or "print").lower()
     try:
         if kind == "espeak":
-            # The direct binary is the reliable path on the Pi; Windows dev
-            # boxes have no espeak-ng, so fall through to pyttsx3 there.
-            try:
-                return EspeakSpeaker(**kwargs)
-            except Exception:
-                return Pyttsx3Speaker()
+            if preset:
+                kwargs = {**VOICE_PRESETS.get(preset, {}), **kwargs}
+            return EspeakSpeaker(**kwargs)
         if kind == "pyttsx3":
             return Pyttsx3Speaker(**kwargs)
         if kind == "piper":
