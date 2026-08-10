@@ -114,27 +114,163 @@ follow the dialogue over SSH even when you can't hear the speaker.
 
 ## 6. ESP32 / G-code output over USB
 
-The Pi-side serial sender is real (`orchestrator/serial_link.py`); it streams the
-planned G-code to the ESP32 and reads back FluidNC's `ok`/`<Idle>` acks. The
-handshake is tolerant — if nothing answers yet (FluidNC not flashed), the bytes
-still go out and reads just time out, logged, never fatal.
+> **Do all of this with the 24V PSU OFF.** The ESP32 runs off USB alone, and with
+> no 24V the TB6600s cannot turn a motor no matter what G-code arrives. FluidNC
+> still tracks position internally, so every step below is fully verifiable with
+> nothing able to move. Only power the 24V rail once section 6.5 passes.
+
+### 6.1 Find the port and get permission to open it
 
 ```bash
-# One-time: let Python open the port without sudo (then log out/in):
+# One-time: let Python open the port without sudo, then log out and back in.
 sudo usermod -aG dialout $USER
+groups                              # 'dialout' must appear in the list
 
-# Plug the ESP32 in over micro-USB and find its device node:
-ls /dev/ttyUSB* /dev/ttyACM*        # usually /dev/ttyUSB0 (CP2102/CH340) or /dev/ttyACM0
+# Plug the ESP32 in over micro-USB, then:
+ls -l /dev/ttyUSB* /dev/ttyACM*     # usually /dev/ttyUSB0 (CP2102/CH340)
+dmesg | tail -20                    # names the driver that grabbed it
+python -m serial.tools.list_ports -v
+```
 
-# Prove the link in isolation (sends 2 safe lines, prints replies):
+Nothing listed? It's the cable or the board. **Many micro-USB cables are
+charge-only and carry no data lines** — that is the single most common cause.
+Try another cable before anything else.
+
+### 6.2 Find out what firmware is actually on the board
+
+```bash
+python -m serial.tools.miniterm /dev/ttyUSB0 115200
+```
+
+Press the ESP32's EN/RST button, then type `$I` and Enter. Exit with `Ctrl-]`.
+
+| What you see | What it means |
+|---|---|
+| `[VER:3.x FluidNC ...]` / a `Grbl 3.x [FluidNC ...]` banner | FluidNC is flashed — skip to 6.4 |
+| Readable text from some other sketch | Something else is flashed — reflash (6.3) |
+| Garbage, or nothing at all | Blank or non-FluidNC board — flash it (6.3) |
+
+Garbage at 115200 right after reset is normal even on a good board: the ESP32 ROM
+bootloader prints at 74880 baud. What matters is whether `$I` gets a reply.
+
+### 6.3 Flash FluidNC (only if 6.2 says it isn't there)
+
+This is Role 4's job per CLAUDE.md, but the commands are here so the software
+side isn't blocked on it.
+
+```bash
+python -m pip install esptool
+```
+
+Download the **`-posix` bundle** for the latest release from
+<https://github.com/bdring/FluidNC/releases>, unzip it, and run the WiFi install
+script it contains (the exact filename carries the version number):
+
+```bash
+cd ~/FluidNC-<version>-posix
+./install-wifi.sh                   # calls esptool against /dev/ttyUSB0
+```
+
+If it can't find the board, hold the BOOT/IO0 button while it starts erasing.
+Re-run 6.2 afterwards — you should now get a FluidNC banner.
+
+### 6.4 Upload our config.yaml
+
+**Yes, you need one.** A freshly flashed FluidNC has no pin map, so it does not
+know which GPIOs drive the TB6600s. `fluidnc/config.yaml` in this repo is that
+map, generated from the team's pin table so it and `motion/config.py` agree.
+
+```bash
+cd ~/voicechess && git pull         # gets fluidnc/config.yaml
+```
+
+Two ways to get the file onto the ESP32's own flash:
+
+**Over WiFi (easiest).** A fresh FluidNC raises an access point called `FluidNC`
+(password `12345678`). Join it, open <http://192.168.0.1> in a browser, and use
+the WebUI's file browser to upload `fluidnc/config.yaml`.
+
+**Over the same USB cable**, using the `fluidterm` script from the release
+bundle you unzipped in 6.3:
+
+```bash
+./fluidterm.sh                      # connects to /dev/ttyUSB0
+# press Ctrl-U, give it the path to fluidnc/config.yaml (XMODEM upload)
+```
+
+Then, still connected:
+
+```
+$Files/List                         # config.yaml should be listed
+$Bye                                # restart so the new config loads
+$I                                  # after reboot: no config-error complaints
+```
+
+The `$` command set shifts slightly between FluidNC versions — `$Help` lists
+what yours actually supports.
+
+### 6.5 Prove the link end to end
+
+```bash
 python serial_test.py /dev/ttyUSB0
+```
 
-# Run the whole game and stream its G-code to the ESP32:
-python main.py --text --script "e2e4,e7e5,g1f3" --serial /dev/ttyUSB0
+The script prints how to read its own output. In short: `< ok` on every line plus
+`? Idle` means the chain works. `< error:9` on every line means FluidNC is alive
+but in Alarm and needs `$H` (or `$X` to unlock without homing). `(no reply within
+timeout)` means bytes are going out but nothing is listening — go back to 6.2.
+
+To prove FluidNC is really *planning motion* and not just acking, jog it with the
+motors still unpowered and watch its position change:
+
+```bash
+python -m serial.tools.miniterm /dev/ttyUSB0 115200
+```
+```
+$X                                  # clear Alarm without homing
+?                                   # note MPos
+G91 G0 X10                          # relative 10mm move
+?                                   # MPos X should have advanced by 10.000
+G90                                 # back to absolute mode
+```
+
+If MPos moves, every layer below the Pi is working and the only thing left is
+power and wiring.
+
+### 6.6 Run the game against it
+
+```bash
+# Dry-run first — no port, prints the exact G-code the gantry would receive:
+python main.py --text --script "e2e4,e7e5,g1f3"
+
+# Check every planned move stays inside the machine envelope:
+python tools/gcode_preview.py --all
+
+# Then stream it for real (--no-home while X/Y still have no limit switches):
+python main.py --text --script "e2e4,e7e5,g1f3" --serial /dev/ttyUSB0 --no-home
 ```
 
 `pyserial` is already in requirements.txt. Without `--serial`, planned G-code is
-printed as `[SERIAL-STUB]` lines instead of sent (the default, and what CI/tests use).
+printed as `[SERIAL-STUB]` lines instead of sent (the default, and what CI/tests
+use). With a real port the link is **strict**: an `error:` reply raises rather
+than streaming the rest of a move into a controller that already rejected a line.
+`serial_test.py` deliberately stays tolerant so it works pre-flash.
+
+### 6.7 Before the 24V goes on
+
+Three values in the config are still placeholders, and two of them can damage
+something:
+
+- **Z `steps_per_mm` in `fluidnc/config.yaml`** assumes a module-1.0, 20-tooth
+  pinion. Wrong here and the claw either misses every piece or drives into the
+  board. Measure the real pinion first.
+- **TB6600 current DIPs** must be set at or below each motor's rated current per
+  phase. Above it is the only setting that can physically cook a motor.
+- **`BOARD_ORIGIN_X/Y` and `Z_BOARD` in `motion/config.py`** are unmeasured, so
+  square coordinates are not yet real.
+
+Also note X and Y have no limit switches yet, so `$H` cannot establish an origin
+— see the `G92` stopgap documented at the bottom of `fluidnc/config.yaml`.
 
 ## 7. Later (not needed yet)
 

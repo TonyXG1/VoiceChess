@@ -149,6 +149,10 @@ def main() -> None:
                         "COM5). Omit for dry-run (prints the G-code instead of sending).")
     p.add_argument("--baud", type=int, default=115200,
                    help="serial baud rate (FluidNC default 115200)")
+    p.add_argument("--no-home", action="store_true",
+                   help="skip the $H homing cycle at startup. Bench testing only: "
+                        "without homing the machine has no idea where a1 is and "
+                        "FluidNC rejects motion with error:9.")
     args = p.parse_args()
 
     # Fail loudly NOW, not mid-game: the AI turn cannot work without Stockfish.
@@ -174,6 +178,12 @@ def main() -> None:
     orch = Orchestrator(engine=engine, voice=voice,
                         planner=MotionPlanner(), serial=serial)
     try:
+        # Home before the first move: machine coordinates (and therefore every
+        # square) are meaningless until the limit switches have been found.
+        if args.no_home:
+            print("[warn] --no-home: skipping $H. Coordinates are uncalibrated.")
+        else:
+            serial.home()
         orch.run(max_turns=args.turns)
     finally:
         serial.close()

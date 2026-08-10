@@ -1,0 +1,179 @@
+# VoiceChess gantry - FluidNC configuration
+# =========================================================================
+# OWNERSHIP NOTE: CLAUDE.md assigns the FluidNC config to Role 4 (hardware).
+# This file was generated on 2026-08-10 from the ESP32 pin table at the
+# software owner's direction, so that the Pi-side G-code and the controller
+# are derived from the SAME numbers. Anything marked [VERIFY] or [BLOCKED]
+# still needs the hardware owner's sign-off before a powered run.
+#
+# Upload with:  the FluidNC WebUI, or  curl -F file=@config.yaml <ip>/upload
+# Check with:   $Config/Validate   then   $Report/Interval=0
+#
+# The Pi-side twin of this file is motion/config.py. If you change
+# steps_per_mm or max_travel_mm here, nothing in motion/config.py changes --
+# but if you change the PHYSICAL build (pulley teeth, microstepping DIPs,
+# board position) you must update both.
+# =========================================================================
+
+name: "VoiceChess Gantry"
+board: "ESP32 Dev Module"
+
+stepping:
+  engine: RMT
+  idle_ms: 250          # hold torque briefly after a move, then release
+  pulse_us: 4           # TB6600 opto inputs need a wide pulse; 4us is safe
+  dir_delay_us: 1
+  disable_delay_us: 0
+
+# All four drivers are set to 1/16 microstepping (S1 OFF, S2 OFF, S3 ON)
+# = 3200 pulse/rev. THIS MUST MATCH THE PHYSICAL DIP SWITCHES or every
+# distance below is wrong by the ratio of the two.
+
+axes:
+  shared_stepper_disable_pin: NO_PIN
+
+  # ---------------------------------------------------------------- X ----
+  # Two NEMA 23 ganged on one axis (dual rails). FluidNC drives them as
+  # motor0/motor1 of the same axis, so they always step together.
+  x:
+    steps_per_mm: 80.000            # 200 full-steps * 16 / (20T * 2mm GT2) = 80
+    max_rate_mm_per_min: 4000.000
+    acceleration_mm_per_sec2: 300.000   # low: a standing chess piece topples easily
+    max_travel_mm: 715.000          # 720mm rail, 5mm of margin
+    soft_limits: false              # [BLOCKED] enable once X has a limit switch
+    homing:
+      cycle: 0                      # [BLOCKED] no X limit switch in the pin table
+      positive_direction: false
+      mpos_mm: 0.000
+      feed_mm_per_min: 300.000
+      seek_mm_per_min: 1500.000
+      settle_ms: 500
+      pulloff_mm: 4.000
+    motor0:
+      limit_neg_pin: NO_PIN         # [BLOCKED] -> gpio.<X>:low:pu when wired
+      hard_limits: false
+      pulloff_mm: 4.000
+      stepstick:
+        step_pin: gpio.12           # [VERIFY] TB6600 opto inputs are commonly
+        direction_pin: gpio.14      # active-low: try gpio.12:low if it stalls
+    motor1:
+      limit_neg_pin: NO_PIN
+      hard_limits: false
+      pulloff_mm: 4.000
+      stepstick:
+        step_pin: gpio.16
+        direction_pin: gpio.18      # [VERIFY] may need :low to counter-rotate
+                                    # the second rail; check both motors turn
+                                    # the SAME way before bolting the gantry on
+
+  # ---------------------------------------------------------------- Y ----
+  y:
+    steps_per_mm: 80.000
+    max_rate_mm_per_min: 4000.000
+    acceleration_mm_per_sec2: 300.000
+    max_travel_mm: 715.000
+    soft_limits: false              # [BLOCKED] no Y limit switch yet
+    homing:
+      cycle: 0                      # [BLOCKED]
+      positive_direction: false
+      mpos_mm: 0.000
+      feed_mm_per_min: 300.000
+      seek_mm_per_min: 1500.000
+      settle_ms: 500
+      pulloff_mm: 4.000
+    motor0:
+      limit_neg_pin: NO_PIN
+      hard_limits: false
+      pulloff_mm: 4.000
+      stepstick:
+        step_pin: gpio.27
+        direction_pin: gpio.26
+
+  # ---------------------------------------------------------------- Z ----
+  # NEMA 17 on rack-and-pinion, so steps_per_mm uses the pinion's PITCH
+  # CIRCUMFERENCE instead of a belt pitch:
+  #     steps_per_mm = 200 * 16 / (pi * module * pinion_teeth)
+  # The value below assumes module 1.0 and a 20-tooth pinion
+  # (pi * 1.0 * 20 = 62.832 mm/rev -> 3200 / 62.832 = 50.930).
+  # [BLOCKED] Replace once the actual pinion is known - a wrong value here
+  # makes every grip either miss the piece or drive the claw into the board.
+  z:
+    steps_per_mm: 50.930
+    max_rate_mm_per_min: 1500.000   # slower than XY: gravity assists one way
+    acceleration_mm_per_sec2: 200.000
+    max_travel_mm: 170.000
+    soft_limits: true               # Z DOES have a switch, so this one is real
+    homing:
+      cycle: 1                      # Z homes FIRST, so the claw is retracted
+      positive_direction: true      # homes UP; the top of travel becomes Z0
+      mpos_mm: 0.000                # ...and the work envelope is 0 to -170
+      feed_mm_per_min: 200.000
+      seek_mm_per_min: 800.000
+      settle_ms: 500
+      pulloff_mm: 3.000
+    motor0:
+      limit_pos_pin: gpio.17:low:pu   # switch at the TOP of travel
+      hard_limits: false
+      pulloff_mm: 3.000
+      stepstick:
+        step_pin: gpio.25
+        direction_pin: gpio.33
+
+  # ---------------------------------------------------------------- A ----
+  # The claw. An RC micro-servo declared as an AXIS (not a spindle), so
+  # G0 A<deg> queues in move order with XY/Z and needs no spindle sync.
+  # FluidNC maps the axis travel range onto the pulse range:
+  #     A0 -> 1000us (open, 60mm outer)   A45 -> 1500us (closed on a piece)
+  # These match CLAW_OPEN_A / CLAW_CLOSED_A in motion/config.py.
+  a:
+    steps_per_mm: 1.000             # "mm" = degrees for an rc_servo axis
+    max_rate_mm_per_min: 6000.000
+    acceleration_mm_per_sec2: 1000.000
+    max_travel_mm: 90.000           # full servo sweep -> the full pulse range
+    soft_limits: false
+    homing:
+      cycle: 0                      # a servo knows its own position
+    motor0:
+      rc_servo:
+        pwm_hz: 50
+        output_pin: gpio.19
+        min_pulse_us: 1000
+        max_pulse_us: 2000
+
+kinematics:
+  Cartesian:
+
+# No spindle, no coolant, no probe on this machine.
+start:
+  must_home: false      # [BLOCKED] set true once X and Y have limit switches
+  deactivate_parking: true
+  check_limits: true
+
+# =========================================================================
+# KNOWN GAPS - read before the first powered run
+# =========================================================================
+#
+# 1. NO X OR Y LIMIT SWITCHES. The pin table only lists one, on Z (gpio.17).
+#    Without them there is no repeatable origin: after every power cycle the
+#    controller has no idea where square a1 is, so `$H` cannot establish the
+#    coordinate frame the Pi-side planner assumes. This is the single largest
+#    risk to a working demo.
+#
+#    Stopgap until they are wired - after each power-up, once:
+#        $J=G91 X10 F1000        (jog until the claw is centred over a1)
+#        G92 X28.50 Y28.69       (declare that spot to be a1's centre)
+#    Those two numbers are a1 from motion/config.py; re-derive them if
+#    BOARD_ORIGIN_X/Y change. This is manual and drifts - it is a bench
+#    workaround, not a demo plan.
+#
+# 2. TB6600 CURRENT DIPS are set on the drivers, not here. Set them at or
+#    just BELOW the motor's rated current per phase - above it is the only
+#    setting that can physically cook a motor:
+#        NEMA 23 @ 2.8A rated -> 2.5A  (S4 OFF, S5 ON,  S6 ON)
+#        NEMA 17 @ 1.5A rated -> 1.5A  (S4 ON,  S5 ON,  S6 OFF)
+#    [VERIFY] Confirm the NEMA 23s are the 2.8A part and not the 4.2A
+#    high-torque one - the TB6600 caps at 3.5A continuous either way.
+#
+# 3. MICROSTEPPING must be 1/16 on all four drivers (S1 OFF, S2 OFF, S3 ON)
+#    to match the steps_per_mm above.
+# =========================================================================

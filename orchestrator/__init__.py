@@ -1,6 +1,6 @@
 """VoiceChess Role 5 - the orchestrator (turn state machine + ESP32 link)."""
 
 from .state_machine import Orchestrator
-from .serial_link import SerialLink
+from .serial_link import SerialLink, SerialError
 
-__all__ = ["Orchestrator", "SerialLink"]
+__all__ = ["Orchestrator", "SerialLink", "SerialError"]

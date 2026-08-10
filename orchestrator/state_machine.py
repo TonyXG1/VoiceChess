@@ -40,35 +40,45 @@ class Orchestrator:
 
     # ------------------------------ MOVE state ------------------------------ #
 
-    def _classify_move(self, uci: str) -> Tuple[str, bool]:
-        """(move_type, is_capture) for Role 3's planner, in its vocabulary.
+    def _classify_move(self, uci: str) -> Tuple[str, bool, bool]:
+        """(move_type, is_capture, high_lift) for Role 3's planner.
 
         Must run BEFORE the move is applied -- castling/en-passant/capture are
         properties of the move in the CURRENT position. Read-only query
         against Role 2's board (the documented source of truth); en passant
         in particular cannot be derived from the post-move SAN/UCI alone.
+
+        ``high_lift`` is True only for knights. Every other piece slides, so
+        chess rules already guarantee its path is empty and the gantry can
+        carry it low and fast; a knight jumps over pieces and must be lifted
+        clear of the 95 mm king. This is the one bit of chess knowledge the
+        motion path needs, and it is derived here so Role 3 never imports
+        ``chess`` (see CLAUDE.md's module ownership rule).
         """
         try:
             move = chess.Move.from_uci(uci)
             board = self.engine.board
+            high_lift = board.piece_type_at(move.from_square) == chess.KNIGHT
             if board.is_castling(move):
-                return "castling", False
+                return "castling", False, False
             if board.is_en_passant(move):
-                return "en_passant", True
+                return "en_passant", True, high_lift
             if move.promotion:
-                return "promotion", board.is_capture(move)
-            return "standard", board.is_capture(move)
+                return "promotion", board.is_capture(move), high_lift
+            return "standard", board.is_capture(move), high_lift
         except ValueError:
             # Malformed UCI: apply() will reject it; flags are never used.
-            return "standard", False
+            return "standard", False, False
 
-    def _execute_motion(self, uci: str, move_type: str, is_capture: bool) -> None:
+    def _execute_motion(self, uci: str, move_type: str, is_capture: bool,
+                        high_lift: bool = False) -> None:
         """Physically execute an applied move: plan G-code, stream it, wait.
 
         Used for BOTH the human and the AI move -- the gantry moves the
         pieces for both sides.
         """
-        gcode = self.planner.plan(uci, move_type=move_type, is_capture=is_capture)
+        gcode = self.planner.plan(uci, move_type=move_type, is_capture=is_capture,
+                                  high_lift=high_lift)
         # Role 3 returns one newline-joined G-code string; the serial link
         # streams line by line.
         self.serial.send(gcode.splitlines())  # blocks until motion done (stub: prints)
@@ -78,6 +88,10 @@ class Orchestrator:
     def run(self, max_turns: int = 40) -> str:
         """Play a full game (human = White, AI = Black). Returns the result text."""
         eng = self.engine
+        # Fresh game: rewind the graveyard/queen-reserve slot counters, then
+        # put the machine into a known G-code state (mm, absolute, claw open).
+        self.planner.reset()
+        self.serial.send(self.planner.startup().splitlines())
         eng.speak("New game. You are White. Your move.")
 
         turn = 0
@@ -120,7 +134,7 @@ class Orchestrator:
             uci = result.move
 
             # Classify for motion BEFORE applying (needs the pre-move board).
-            move_type, is_capture = self._classify_move(uci)
+            move_type, is_capture, high_lift = self._classify_move(uci)
 
             # Apply via Role 2 (rules authority; nothing illegal passes).
             res = eng.apply(uci)
@@ -133,7 +147,7 @@ class Orchestrator:
             eng.speak(f"You said {res.readback}")
 
             # MOVE(human): Role 3 plans, Role 4 executes. No listening here.
-            self._execute_motion(res.uci, move_type, is_capture)
+            self._execute_motion(res.uci, move_type, is_capture, high_lift)
 
             if res.status.is_game_over:
                 break
@@ -141,12 +155,12 @@ class Orchestrator:
             # ============================= AI TURN ============================== #
             # THINK: ask Stockfish (does not apply yet).
             ai_uci = eng.ai_move()
-            ai_move_type, ai_is_capture = self._classify_move(ai_uci)
+            ai_move_type, ai_is_capture, ai_high_lift = self._classify_move(ai_uci)
             ai_res = eng.apply(ai_uci)
             eng.speak(f"A I plays {ai_res.readback}")
 
             # MOVE(AI): same plan -> stream path as the human move.
-            self._execute_motion(ai_res.uci, ai_move_type, ai_is_capture)
+            self._execute_motion(ai_res.uci, ai_move_type, ai_is_capture, ai_high_lift)
 
             if ai_res.status.is_game_over:
                 break

@@ -78,6 +78,49 @@ res.san           # "exd5", "O-O", "e8=Q" etc. carry the flags in notation
 or read them from the board before applying via python-chess if you prefer.
 Role 2 never emits G-code and never touches the serial port - that's your lane.
 
+### Motion contract (Role 3)
+
+```python
+planner = MotionPlanner()
+planner.reset()                      # per game: rewinds graveyard/queen slots
+planner.startup()  -> str            # one-time G21/G90/G94 + open claw + retract Z
+planner.plan(uci_move,               # "e2e4" (a promotion suffix is tolerated)
+             move_type="standard",   # | "castling" | "en_passant" | "promotion"
+             is_capture=False,
+             high_lift=False) -> str # ONE newline-joined G-code string
+```
+
+The orchestrator derives all three flags from Role 2's board **before** applying
+the move (`_classify_move` -> `(move_type, is_capture, high_lift)`), then
+`splitlines()` the result for the serial link. `high_lift` is True only for
+knights - see CLAUDE.md's lift policy. The planner imports no chess library and
+never talks to the serial port.
+
+Every physical constant lives in `motion/config.py`, and only the four
+`[MEASURE]` values there should change during calibration. `plan()` raises
+`ValueError` for an off-board square or a position outside the machine envelope,
+so nothing invalid can reach the motors.
+
+### Serial contract (Role 4 boundary)
+
+```python
+link = SerialLink(port=None, baud=115200, strict=None)
+link.home()                          # $H, then blocks until <Idle>
+link.send(gcode.splitlines())        # blocks until motion completes
+link.close()
+```
+
+`port=None` is dry-run (prints `[SERIAL-STUB]`, opens nothing, tolerant).
+A real port is **strict**: an `error:` reply raises `SerialError` rather than
+streaming the rest of a move into a controller that already rejected a line.
+Pass `strict=False` for pre-flash bench work.
+
+Protocol notes that matter: `ok` means *queued*, not executed - `send()` polls
+`?` until `Idle` before returning, which is what keeps the game loop out of
+LISTEN while the gantry is moving. FluidNC boots into **Alarm** with homing
+enabled and answers every line `error:9` until `$H` runs. Comments are stripped
+before they reach the wire (they still appear in the local trace).
+
 ## For Role 5 (Orchestrator)
 
 You own the turn loop and the *timing* of every call above. `orchestrator/state_machine.py`

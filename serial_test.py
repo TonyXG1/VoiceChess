@@ -19,11 +19,14 @@ import sys
 
 from orchestrator import SerialLink
 
-# Comment line (FluidNC acks it) + a safe rapid move to origin. No claw, no Z
-# plunge -- nothing that could slam hardware if motors happen to be live.
+# Set the modal state, then a safe rapid to origin. No claw, no Z plunge --
+# nothing that could slam hardware if motors happen to be live. Comments are
+# stripped by the link and never reach the wire.
 SAMPLE_GCODE = [
     "; VoiceChess serial-link test",
-    "G0 X0 Y0 F4000",
+    "G21 ; millimetres",
+    "G90 ; absolute positioning",
+    "G0 X0.00 Y0.00 ; rapid to origin",
 ]
 
 
@@ -34,7 +37,9 @@ def main() -> None:
     args = p.parse_args()
 
     try:
-        link = SerialLink(port=args.port, baud=args.baud)
+        # strict=False: this script's whole point is to work BEFORE FluidNC is
+        # flashed, when no line will ever be acked. main.py stays strict.
+        link = SerialLink(port=args.port, baud=args.baud, strict=False)
     except Exception as e:
         sys.exit(f"ERROR: could not open {args.port} @ {args.baud}: "
                  f"{e.__class__.__name__}: {e}")
@@ -42,9 +47,13 @@ def main() -> None:
     print(f"Opened {args.port} @ {args.baud}. Streaming {len(SAMPLE_GCODE)} lines...\n")
     link.send(SAMPLE_GCODE)
     link.close()
-    print("\nDone. Saw '< ok' acks and a '? <Idle...>' status -> FluidNC is talking. "
-          "Only '(no reply)' / timeouts -> port opens and bytes flow, but nothing is "
-          "answering yet (FluidNC not flashed).")
+    print("\nDone. How to read the output above:")
+    print("  '< ok' on every line + '? Idle'   -> FluidNC is flashed and healthy.")
+    print("  '< error:9' on every line          -> FluidNC is there but in Alarm;")
+    print("                                        it needs $H (or $X to unlock).")
+    print("  '(no reply within timeout)'        -> the port opens and bytes go out,")
+    print("                                        but nothing is answering: FluidNC")
+    print("                                        isn't flashed, or the baud is wrong.")
 
 
 if __name__ == "__main__":

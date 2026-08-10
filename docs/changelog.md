@@ -5,6 +5,67 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-08-10
+
+Retargets the motion path from placeholder geometry to the real machine. Scope:
+`motion/`, `orchestrator/`, `fluidnc/`, `tools/`. (Entries below 0.4.0 are
+`voice_matching`-only — that module's history starts this file.)
+
+### Fixed
+- **`G4 P500` dwelled for 500 SECONDS** (`motion/planner.py`): GRBL/FluidNC read
+  `G4 P` in seconds; milliseconds is Marlin. Four dwells per standard move meant
+  ~33 minutes of stalling. Now `G4 P0.5`, with a regression test asserting every
+  dwell is a plausible number of seconds.
+- **Carried pieces swept the board** (`motion/planner.py`): every carry used a
+  fixed 40mm lift, below the 45mm pawn. Captures, castling and knight moves all
+  drag pieces across occupied squares. Replaced with a lift policy — low carry
+  only where chess rules guarantee an empty path, high carry (clear of the 95mm
+  king) for knights, graveyard trips, the queen-reserve trip, and castling's rook
+  leg. A test asserts XY never moves below carry height in any scenario.
+- **The claw never actuated** (`motion/planner.py`): bare `M3` is spindle-on at
+  speed 0. The claw is an `rc_servo` on the A axis; it is now `G0 A0` / `G0 A45`,
+  which also queues in move order with XY/Z for free.
+- **No preamble, no homing** (`orchestrator/`): FluidNC boots into Alarm and
+  rejects every line with `error:9` until `$H`. Added `MotionPlanner.startup()`
+  (G21/G90/G94, open claw, retract Z) and `SerialLink.home()`, both wired into
+  the game loop; `main.py --no-home` skips homing for bench work.
+- **Errors were streamed straight past** (`orchestrator/serial_link.py`): an
+  `error:` reply was logged and the rest of the move sent anyway, so a wedged
+  machine produced a clean-looking log. A real port is now strict and raises
+  `SerialError`; dry-run and `strict=False` stay tolerant.
+- **Promotion handed Black a white queen** (`motion/planner.py`): the reserve was
+  a single point regardless of side. Colour is now derived from the destination
+  rank. Underpromotion still places a queen but emits a `WARNING` comment.
+- **`idle_timeout` 30s -> 180s**: a capture is ~1.5m of travel, so the old
+  timeout expired mid-move — and because it was non-fatal, the orchestrator
+  returned to LISTEN while the gantry was still moving.
+
+### Added
+- **`motion/config.py`** — every physical constant in one file, with an import-time
+  self-check that the build has enough Z travel to lift a piece over the king and
+  that no off-board zone falls outside the envelope. Four `[MEASURE]` values are
+  all that should change during calibration.
+- **`fluidnc/config.yaml`** — pin map (ganged X across gpio.12/16, Y, Z with its
+  limit switch, A as `rc_servo` on gpio.19), steps/mm, travel, homing. Generated
+  from the team's pin table so the controller and the planner share one set of
+  numbers. `[BLOCKED]`/`[VERIFY]` markers flag what needs hardware sign-off.
+- **`tools/gcode_preview.py`** — dry-run a planned move: per-line X/Y/Z/A trace,
+  travel distance, duration estimate, and a hard fail on any position outside the
+  envelope or below the board surface. `--all` covers every move type.
+- **`tests/test_serial_link.py`** — streaming, comment stripping, error/alarm
+  handling and homing against a fake port.
+- **Graveyard grid** — captured pieces land in a 4x8 grid of 32 slots instead of
+  piling up on one point.
+
+### Changed
+- **BREAKING — `plan()` and `_classify_move()` signatures**: `plan()` takes a
+  fourth argument `high_lift`; `_classify_move()` returns a 3-tuple
+  `(move_type, is_capture, high_lift)`. The knight test lives in the orchestrator
+  so Role 3 still imports no chess library.
+- **Board geometry**: 57.0 x 57.375mm squares derived from the measured 456 x
+  459mm spans, replacing the placeholder 50mm grid. Coordinates are square
+  CENTERS (`a1 = 28.50, 28.69`). Rapids no longer carry a meaningless `F` word.
+
 ## [0.3.0] - 2026-07-05
 
 ### Added

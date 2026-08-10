@@ -87,26 +87,37 @@ Keep it that way end to end. SAN (e.g. "Nf3") is only for human-facing speech/re
                       h2h3); it is a rank-8 word only.
     chess_ai/         Role 2 — rules authority (python-chess), Stockfish AI, TTS
                       (get_speaker falls back to PrintSpeaker on any failure).
-    motion/           Role 3 — REAL (merged 2026-07-05). square->mm + G-code for
-                      standard/capture/castling/en-passant/promotion moves.
-                      plan(uci, move_type, is_capture) returns ONE newline-joined
-                      G-code string; the orchestrator splitlines() it for serial.
-                      The orchestrator derives move_type/is_capture from Role 2's
-                      board BEFORE applying the move (_classify_move).
+    motion/           Role 3 — REAL. square->mm + G-code for standard/capture/
+                      castling/en-passant/promotion moves. Retargeted to the real
+                      machine 2026-08-10 (see "Motion / G-code contract" below).
+                      config.py holds EVERY physical constant — it is the one file
+                      to edit when calibrating; planner.py is pure string-building
+                      and imports no chess library. plan(uci, move_type,
+                      is_capture, high_lift) returns ONE newline-joined G-code
+                      string; the orchestrator splitlines() it for serial.
+                      startup() returns the one-time G21/G90/G94 preamble.
     orchestrator/     Role 5 — the turn state machine (state_machine.py) and the
-                      ESP32 serial link (serial_link.py — REAL pyserial sender as
-                      of 2026-07-05, gated behind main.py's --serial <port>). No
-                      port = dry-run: it just prints [SERIAL-STUB] lines, so
-                      tests/CI/--text are unchanged. With a port it opens the ESP32
-                      at FluidNC baud, streams each G-code line, and reads ok/<Idle>
-                      acks. The handshake is deliberately TOLERANT (every read
-                      times out and logs, never hangs) so the pipeline emits real
-                      serial bytes BEFORE FluidNC is flashed. Role 4 still owns the
-                      ESP32 firmware + config; tighten the handshake once it answers.
+                      ESP32 serial link (serial_link.py — REAL pyserial sender,
+                      gated behind main.py's --serial <port>). No port = dry-run:
+                      it just prints [SERIAL-STUB] lines, so tests/CI/--text are
+                      unchanged. With a port it homes ($H), streams each G-code
+                      line, and reads ok/<Idle> acks. Dry-run stays TOLERANT; a
+                      real port is STRICT (an error: reply raises SerialError
+                      instead of streaming into a wedged machine) — pass
+                      strict=False for pre-flash bench work, as serial_test.py does.
+    fluidnc/          config.yaml for the ESP32 — pin map, steps/mm, travel,
+                      homing. Generated 2026-08-10 from the team's pin table so it
+                      and motion/config.py come from the same numbers. Role 4 still
+                      owns it; [BLOCKED]/[VERIFY] markers flag what needs sign-off.
+    tools/            gcode_preview.py — dry-run a planned move, trace it, time it,
+                      and fail on any position outside the machine envelope. Run it
+                      before the first powered move and after any config.py change.
     main.py           Entry point. `python main.py --text --script "e2e4,..."` runs
                       the whole pipeline with no mic/model/robot; add
-                      `--serial /dev/ttyUSB0` to stream the G-code to the ESP32.
-    tests/            pytest suites for voice_matching, chess_ai, and motion.
+                      `--serial /dev/ttyUSB0` to stream the G-code to the ESP32
+                      (`--no-home` skips $H for bench testing).
+    tests/            pytest suites for voice_matching, chess_ai, motion, and the
+                      serial link.
     docs/             agents.md, interfaces.md, changelog.md, original READMEs.
 
 **Orchestration rule**: the orchestrator is the ONLY module that calls other modules.
@@ -119,11 +130,47 @@ Only listen during LISTEN — never trigger audio capture during MOVE/THINK.
 
 Role 3's real planner and Role 1's 0.2.0 update are merged (their raw clones were
 merge inputs only and have been deleted; their history lives on their own remotes).
-Role 4 (ESP32/FluidNC config + hardware build) is still another team member's work.
-The Pi-side serial SENDER (serial_link.py) is now real — the user directed this on
-2026-07-05 — but the ESP32 firmware/FluidNC YAML and the on-wire handshake tightening
-remain Role 4's; don't invent FluidNC config logic. Don't change Role 1/2/3 logic
-when integrating.
+Role 4 (the physical build + flashing the ESP32) is still another team member's work.
+The Pi-side serial SENDER (serial_link.py) is real, and `fluidnc/config.yaml` was
+generated on 2026-08-10 at the user's direction so the controller and the planner
+share one set of numbers — but Role 4 still owns the file and the build. Don't
+change Role 1/2 logic when integrating.
+
+## Motion / G-code contract
+
+The dialect is **GRBL/FluidNC, not Marlin**. Four differences have already caused
+real bugs here; don't reintroduce them:
+
+- **`G4 P` is SECONDS.** `G4 P500` dwells for 8 minutes, not 500ms.
+- **`G0` ignores `F`.** Rapid speed comes from `max_rate_mm_per_min` in the YAML.
+  Only `G1` carries a feed word.
+- **The claw is the A axis** (`rc_servo` on gpio.19), not a spindle: `G0 A0` opens,
+  `G0 A45` closes. As an axis it queues in move order with XY/Z for free. A bare
+  `M3` would be a no-op anyway (spindle speed defaults to 0).
+- **FluidNC boots into Alarm** with homing enabled and answers every G-code line
+  with `error:9` until `$H` runs. `$H` is a `$` command, not G-code, so the serial
+  link owns it — never the planner.
+
+Geometry (all in `motion/config.py`): squares are **57.0 x 57.375 mm**, derived from
+the board's measured 456 x 459 mm spans rather than the nominal 58 mm — the nominal
+value drifts ~8mm by the h-file. A square's coordinate is its CENTER, so
+`a1 = (28.50, 28.69)` and `h8 = (427.50, 430.31)`. Z homes to the top, so the work
+envelope is **negative**: `Z_TOP = 0`, board surface at `Z_BOARD = -150`, grip at
+`-132`, low carry `-117`, safe/high carry `-22`.
+
+**Lift policy** — the claw must never drag a piece across the board:
+
+- Sliding pieces (R/B/Q/K/P) carry LOW. Chess rules guarantee their path is empty.
+- Knights carry HIGH (clear of the 95mm king). This is the ONLY chess knowledge the
+  motion path needs, and the orchestrator derives it (`_classify_move` returns
+  `(move_type, is_capture, high_lift)`) so Role 3 never imports `chess`.
+- Graveyard trips, the queen-reserve trip, and castling's ROOK leg are always HIGH —
+  each crosses occupied squares. (Kingside, the rook h1->f1 passes through g1 where
+  the king now stands; moving the rook first just swaps who is in whose way.)
+
+`tools/gcode_preview.py --all` asserts every scenario stays in the envelope; the
+same check runs in `tests/test_motion.py`, along with an invariant that XY never
+moves below carry height.
 
 ## Runtime facts
 
@@ -139,41 +186,66 @@ when integrating.
 
 **Compute**: Raspberry Pi 5 Model B **(4GB)**, official PSU, 32GB microSD, ESP32 dev
 board. **Voice I/O**: USB microphone + small USB/3.5mm speaker, both on the Pi.
-**Motion**: 4x TB6600 stepper drivers — 3x NEMA 23 (X/Y/Z axes, Z via rack-and-pinion)
-+ 1x NEMA 17 (claw grip). **Note**: the claw was changed from an MG996R servo to the
-NEMA 17 stepper by team decision; the electronics BOM spreadsheet still lists the old
-servo line item — treat that entry as stale, don't reorder it. **Power**: Mean Well
-LRS-350-24 (~14.6A) -> drivers; DC-DC buck converter 24V->5V for the ESP32; separate
-Pi PSU; common ground across everything; motor-current wiring kept away from logic
-wiring. Mechanical limit switches (already sourced) for homing.
+**Power**: Mean Well LRS-350-24 (~14.6A) -> drivers; DC-DC buck converter 24V->5V for
+the ESP32; separate Pi PSU; common ground across everything; motor-current wiring kept
+away from logic wiring.
+
+**Motion** — 4x TB6600 drivers, per the team's ESP32 pin table (2026-08-10), which
+**supersedes the earlier reconstruction** that put NEMA 23s on all three axes and a
+NEMA 17 on the claw:
+
+| Axis | Motor | Step | Dir | Extras |
+|---|---|---|---|---|
+| X | **2x** NEMA 23 (ganged, dual rail) | gpio.12, gpio.16 | gpio.14, gpio.18 | — |
+| Y | NEMA 23 | gpio.27 | gpio.26 | — |
+| Z | **NEMA 17**, rack-and-pinion | gpio.25 | gpio.33 | limit `gpio.17:low:pu` |
+| A | **claw micro-servo** | — | — | `rc_servo` gpio.19, 1000-2000us @50Hz |
+
+Motor count is unchanged (3x NEMA 23 + 1x NEMA 17); the *assignment* moved. The
+electronics BOM's MG996R servo line item — previously marked stale — is live again.
+
+**Dimensions**: board 456mm (a-h) x 459mm (1-8), 57mm squares. Travel 720mm on X and
+Y, 170mm on Z. Claw opening 60mm outside / 45mm inside. Piece heights: king 95, queen
+75, bishop 65, knight 58, rook 46, pawn 45 — the 95mm king sets `LIFT_HIGH`, and the
+45mm claw opening is what the piece bases must fit inside.
 
 This is a gantry with **3 linear axes (X/Y/Z) plus a claw actuator** — not a 2-axis
-system. (Motor/axis assignment above is reconstructed from prior team discussion; the
-current electronics BOM doesn't itemize the motors themselves, so double-check the
-final assignment with whoever owns Role 3/4 before treating it as locked.)
+system.
 
 ### Decided (don't re-litigate these)
 
 - **ESP32 firmware: FluidNC**, flashed as-is — no custom real-time firmware is being
-  written. Role 4 owns the YAML config (pins, steps/mm, homing) and the physical build.
-- **Claw actuator: NEMA 17 stepper** (not a servo — see hardware note above).
+  written. Role 4 owns the physical build; `fluidnc/config.yaml` now exists in-repo.
+- **Claw actuator: RC micro-servo on the A axis**, commanded `G0 A0` / `G0 A45`
+  (reverted from the NEMA 17 stepper; the pin table is the authority).
 - **Z-axis**: vertical drop via rack-and-pinion (uses pinion pitch circumference in
   the steps_per_mm calculation, unlike the belt-driven X/Y axes).
+- **Microstepping: 1/16 on all four drivers** (S1 OFF, S2 OFF, S3 ON) = 3200 pulse/rev
+  -> 80 steps/mm on the GT2/20T belt axes. Must match the physical DIPs.
+- **Board geometry**: 57.0 x 57.375mm squares from the measured spans, not 58mm.
+- **Graveyard is a 4x8 grid** (X500-686, Y40-425), not a single point — 32 slots for
+  the 30 capturable pieces. Queen reserve has one row per colour.
 
 ### Still open — flag if a software choice depends on one
 
-- **Board/square dimensions**: BOM lists the board as ~50x50cm overall, which doesn't
-  cleanly match the 50mm-square / 400mm-board example math used elsewhere for the
-  square->mm coordinate formula. Role 3's merged planner now HARDCODES 50mm squares
-  (25mm offsets, graveyard at X420 Y200, queen reserve at X480 Y200) — verify against
-  the physical build before the first powered run.
+- **X and Y limit switches are not in the pin table** (only Z has one). Without them
+  `$H` cannot establish a repeatable origin, so after any power cycle the machine
+  does not know where a1 is. **This is the largest risk to a working demo.** Stopgap
+  documented in `fluidnc/config.yaml`: jog to a1 and `G92 X28.50 Y28.69`.
+- **Z pinion module + tooth count** — needed for Z `steps_per_mm`. The YAML currently
+  assumes module 1.0 / 20 teeth (50.930 steps/mm). A wrong value here makes every
+  grip miss the piece or drive the claw into the board.
+- **`BOARD_ORIGIN_X/Y` and `Z_BOARD`** in `motion/config.py` are placeholders until
+  measured on the built machine. Everything else derives from them.
+- **NEMA 23 current rating**: 2.8A or 4.2A? Decides whether the TB6600 DIP ceiling is
+  2.8A or 3.5A (the driver caps at 3.5A continuous either way).
+- **Claw jaw axis**: the graveyard grid's 62mm X spacing assumes the jaws open along
+  X. If they open along Y, swap `GRAVEYARD_DX`/`GRAVEYARD_DY`.
 - **Kinematics**: plain Cartesian dual-rail vs. CoreXY/H-bot. A cross-shaft link
   between the two base X-rails (to prevent gantry racking) is planned regardless of
   which is chosen.
-- Captures/promotion: Role 3's planner drops EVERY captured piece on the single point
-  (X420, Y200) — pieces will physically pile up there; a sequential single-file strip
-  is still the recommended evolution. Promotion always fetches a queen from one
-  reserve point (X480, Y200) regardless of the promotion piece in the UCI move.
+- **Underpromotion** still always places a queen; the planner now emits a `WARNING`
+  comment rather than substituting silently.
 
 ## Working conventions
 
