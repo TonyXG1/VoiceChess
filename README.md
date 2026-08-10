@@ -51,14 +51,17 @@ pip install pyttsx3                                 # optional: spoken audio on 
 python main.py                                      # live mic if available, else auto-falls back to text
 python main.py --text                               # force text mode — type your moves, no mic/model needed
 python main.py --text --script "e2e4,e7e5,g1f3"     # scripted, fully hardware-free (best quick smoke test)
-python main.py --tts espeak                         # live mic + spoken feedback (espeak-ng / Windows voice)
-python main.py --text --tts espeak                  # typed input + spoken feedback
+python main.py --tts espeak                         # live mic + spoken feedback (Pi: espeak-ng)
+python main.py --tts espeak --voice male            # ...with the male narrator voice
+python main.py --text --tts espeak --voice female   # typed input + spoken feedback (female = default)
+python main.py --tts pyttsx3                        # spoken feedback on a Windows dev box
 
 # tunables (combine with any of the above):
 #   --skill 0-20   opponent strength (default 5)
 #   --think 0.5    AI seconds per move
 #   --turns 40     max turns (demo safety limit)
 #   --tts print|espeak|pyttsx3|piper   audio backend (default print — just prints [SPEAK] lines)
+#   --voice female|male                narrator voice preset (espeak backend only, default female)
 
 # --- Audio & voice hardware checks ---
 python speak_test.py                                # do you hear the spoken test sentences?
@@ -115,13 +118,49 @@ it never crashes.
 ### Spoken audio (text-to-speech)
 
 ```bash
-python speak_test.py            # quick check: do you hear four sentences?
-python main.py --tts espeak     # play with spoken feedback
+python speak_test.py                        # quick check: do you hear four sentences?
+python main.py --tts espeak --voice male    # Pi: play with spoken feedback
+python main.py --tts pyttsx3                # Windows dev box: same, via the system voice
 ```
 
-`--tts espeak` calls the espeak-ng binary on Linux (`sudo apt install espeak-ng`)
-and automatically falls back to pyttsx3 (`pip install pyttsx3`) on Windows — same
-flag everywhere. Without `--tts`, speech is printed as `[SPEAK] ...` lines instead.
+Pick the backend per machine — **there is no automatic cross-platform fallback
+between them**:
+
+| Backend | Where it works | Needs |
+|---|---|---|
+| `--tts espeak` | Raspberry Pi / Linux | `sudo apt install espeak-ng` |
+| `--tts pyttsx3` | Windows (SAPI5), Linux (via espeak-ng) | `pip install pyttsx3` |
+| `--tts piper` | Pi / Linux, natural-sounding | `piper` on PATH + `PIPER_MODEL=/path/voice.onnx` |
+| `--tts print` | everywhere (default) | nothing — prints `[SPEAK] ...` lines |
+
+If a backend can't start (binary missing, no audio device), the game **never
+crashes** — it prints a one-line note and degrades to the print speaker. So on a
+Windows box `--tts espeak` logs `espeak unavailable: espeak-ng binary not found
+on PATH; falling back to print` and runs silently; use `--tts pyttsx3` there, or
+install espeak-ng with `winget install --id eSpeak-NG.eSpeak-NG -e` (then add
+`C:\Program Files\eSpeak NG` to PATH and reopen the terminal).
+
+#### Narrator voice
+
+`--voice female|male` selects an espeak-ng voice preset (**espeak backend only** —
+it is ignored by `pyttsx3`/`piper`/`print`). Default is `female`, so running
+without the flag sounds exactly as it did before.
+
+| Preset | espeak voice | Rate | Pitch |
+|---|---|---|---|
+| `female` (default) | `en-us+f2` | 130 | 40 |
+| `male` | `en-us+m3` | 130 | 40 |
+
+The presets live in `VOICE_PRESETS` in [`chess_ai/speech.py`](chess_ai/speech.py);
+add an entry there and it becomes a new `--voice` choice (also add it to the
+`choices=` list in `main.py`). For finer control, `get_speaker` takes the same
+knobs directly — explicit arguments beat the preset:
+
+```python
+from chess_ai import get_speaker
+get_speaker("espeak", preset="male").say("knight to f6")
+get_speaker("espeak", preset="male", rate=110, amplitude=200).say("check")
+```
 
 ### Raspberry Pi
 
@@ -136,7 +175,8 @@ confirms every move out loud before executing it. Take your time — silence nev
 fails a turn.
 
 Useful flags: `--skill 0-20` (opponent strength, default 5), `--think 0.5`
-(seconds per AI move), `--turns 40` (demo safety limit).
+(seconds per AI move), `--turns 40` (demo safety limit), `--tts espeak` +
+`--voice female|male` (spoken feedback and which narrator voice).
 
 ## Tests
 
