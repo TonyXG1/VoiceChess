@@ -246,7 +246,7 @@ python main.py --text --script "e2e4,e7e5,g1f3"
 # Check every planned move stays inside the machine envelope:
 python tools/gcode_preview.py --all
 
-# Then stream it for real (--no-home while X/Y still have no limit switches):
+# Then stream it for real (--no-home is mandatory: no axis is configured to home):
 python main.py --text --script "e2e4,e7e5,g1f3" --serial /dev/ttyUSB0 --no-home
 ```
 
@@ -269,8 +269,11 @@ something:
 - **`BOARD_ORIGIN_X/Y` and `Z_BOARD` in `motion/config.py`** are unmeasured, so
   square coordinates are not yet real.
 
-Also note X and Y have no limit switches yet, so `$H` cannot establish an origin
-— see the `G92` stopgap documented at the bottom of `fluidnc/config.yaml`.
+Also note that **no axis is homed**: X and Y have no limit switches, and Z's is not
+wired, so `$H` has nothing to home and cannot establish an origin — see the
+`G10 L20` stopgap documented at the bottom of `fluidnc/config.yaml`. Because Z has
+no switch and no soft limits either, park the Z carriage at the top of its travel
+before powering on.
 
 ## 7. Later (not needed yet)
 

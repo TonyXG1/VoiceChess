@@ -4,13 +4,19 @@ Every number the gantry cares about lives here, so tuning the real build never
 means editing planner logic. After the first powered run you should only ever
 need to touch the four values marked ``[MEASURE]``.
 
-Coordinate system (matches FluidNC after ``$H``):
+Coordinate system (matches the frame declared in ``fluidnc/config.yaml``):
 
     X  0 -> 715 mm   left to right   (a-file .. h-file, then the off-board zones)
     Y  0 -> 715 mm   near to far     (rank 1 .. rank 8, then graveyard/reserve)
-    Z  0 -> -170 mm  DOWN IS NEGATIVE -- Z homes to the top, so the whole work
-                     envelope is negative and Z0 is "claw fully retracted".
+    Z  0 -> -170 mm  DOWN IS NEGATIVE -- Z0 is the top of travel, "claw fully
+                     retracted", so the whole work envelope is negative.
     A                the claw servo, in degrees (an axis, not a spindle)
+
+NOTHING IS HOMED right now: X and Y have no limit switches and Z's is not wired,
+so all four axes are ``cycle: 0`` and ``$H`` has nothing to home (``--no-home``
+is mandatory). Every coordinate below is therefore relative to wherever the
+machine happened to sit at power-on. Park the Z carriage at the TOP of its
+travel before switching on, or every descent starts from the wrong place.
 
 Board geometry is derived from the measured spans of the real board rather than
 the nominal square size: 456 mm across a-h is 57.0 mm/square, 459 mm across 1-8
@@ -24,10 +30,13 @@ from __future__ import annotations
 # Machine envelope
 # --------------------------------------------------------------------------- #
 
-# Rail lengths are 720 mm; soft limits sit just inside so a rapid can never
-# slam the ends. Z is 170 mm of rack-and-pinion travel.
-X_MAX = 715.0
-Y_MAX = 715.0
+# Rail lengths are 720 mm; the usable envelope sits just inside so a rapid can
+# never slam the ends. Z is 170 mm of rack-and-pinion travel.
+RAIL_LENGTH = 720.0
+RAIL_MARGIN = 5.0
+
+X_MAX = RAIL_LENGTH - RAIL_MARGIN      # 715.0
+Y_MAX = RAIL_LENGTH - RAIL_MARGIN      # 715.0
 Z_AXIS_LENGTH = 170.0
 
 # Where the gantry parks between moves: out of the player's line of sight.
@@ -69,11 +78,23 @@ GRIP_OFFSET = 18.0
 # the board surface itself.
 LIFT_LOW = 15.0
 
-# Loaded carry across occupied squares. Must clear the tallest piece: the king
-# is 95 mm, plus 15 mm of margin.
-LIFT_HIGH = 110.0
+# Measured piece heights in mm. Only the tallest one actually drives motion --
+# LIFT_HIGH has to clear it -- but the whole set is recorded here so that number
+# is derived and auditable instead of a magic constant nobody can re-check.
+PIECE_HEIGHTS = {
+    "king": 95.0,
+    "queen": 75.0,
+    "bishop": 65.0,
+    "knight": 58.0,
+    "rook": 46.0,
+    "pawn": 45.0,
+}
 
-TALLEST_PIECE = 95.0   # king; for the assertion below and for documentation
+TALLEST_PIECE = max(PIECE_HEIGHTS.values())    # 95.0 -- the king
+
+# Loaded carry across occupied squares: clear the tallest piece, plus margin.
+LIFT_MARGIN = 15.0
+LIFT_HIGH = TALLEST_PIECE + LIFT_MARGIN        # 110.0
 
 Z_GRIP = Z_BOARD + GRIP_OFFSET            # -132.0  claw closed around a piece
 Z_CARRY_LOW = Z_GRIP + LIFT_LOW           # -117.0  loaded, empty path
@@ -82,14 +103,21 @@ Z_SAFE = Z_CARRY_HIGH                     #  -22.0  empty claw always travels he
 
 
 # --------------------------------------------------------------------------- #
-# Claw (RC micro-servo on the A axis, gpio.19, 1000-2000 us @ 50 Hz)
+# Claw (SG90 9g micro-servo on the A axis, gpio.19, 1000-2000 us @ 50 Hz)
 # --------------------------------------------------------------------------- #
 
-# Degrees, mapped by FluidNC's rc_servo to the pulse range. Because the servo is
-# declared as an AXIS and not a spindle, these commands sit in the motion queue
-# and are ordered against the XY/Z moves for free -- no spindle-sync guesswork.
-CLAW_OPEN_A = 0.0      # 60 mm outer opening
-CLAW_CLOSED_A = 45.0   # gripping a piece; 45 mm inner opening at full close
+# Physical jaw geometry. The inner width is what a piece base has to fit inside;
+# the outer width is what has to clear a neighbouring piece, which is where
+# GRAVEYARD_DX below comes from.
+CLAW_OPEN_MM = 60.0    # outer width, jaws open
+CLAW_GRIP_MM = 45.0    # inner width, jaws closed on a piece
+
+# Degrees, mapped by FluidNC's rc_servo across the A axis travel to the pulse
+# range (A0 -> 1000 us, A90 -> 2000 us). Because the servo is declared as an
+# AXIS and not a spindle, these commands sit in the motion queue and are ordered
+# against the XY/Z moves for free -- no spindle-sync guesswork.
+CLAW_OPEN_A = 0.0      # 1000 us; CLAW_OPEN_MM outer
+CLAW_CLOSED_A = 45.0   # 1500 us; gripping a piece at CLAW_GRIP_MM inner
 
 # Seconds. GRBL/FluidNC read G4 P as SECONDS -- P500 would dwell for 8 minutes.
 CLAW_DWELL_S = 0.5
@@ -184,6 +212,16 @@ def _check() -> None:
 
     if GRAVEYARD_COLS * GRAVEYARD_ROWS < 30:
         raise ValueError("Graveyard has fewer than 30 slots; captures would collide.")
+
+    # Slots must be spaced wider than the claw's open outer width, or the jaws
+    # clip the piece in the next slot on the way down.
+    if GRAVEYARD_DX <= CLAW_OPEN_MM:
+        raise ValueError(
+            f"GRAVEYARD_DX ({GRAVEYARD_DX}) is not wider than the claw's open "
+            f"outer width ({CLAW_OPEN_MM}) -- the jaws would clip the piece in "
+            f"the neighbouring slot. NOTE: this assumes the jaws open along X; "
+            f"if they open along Y, swap GRAVEYARD_DX and GRAVEYARD_DY."
+        )
 
 
 _check()

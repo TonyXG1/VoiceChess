@@ -39,8 +39,18 @@ axes:
   x:
     # 200 full-steps * 16 / (20T * 2mm GT2) = 80
     steps_per_mm: 80.000
-    max_rate_mm_per_min: 4000.000
-    # Low: a standing chess piece topples easily.
+    # 8000 mm/min = 133 mm/s = 200 rev/min on a 20T GT2 pulley -- well
+    # inside a NEMA 23's torque band at 24V, and only 10.6k steps/s per
+    # motor, nowhere near the RMT engine's ceiling. (The previous 4000 was
+    # set in the first commit and never justified; it is the one
+    # conservative number in this file that had no stated reason.)
+    # THE REAL CEILING IS NOT ELECTRICAL: X and Y have no limit switches
+    # and no soft limits, so nothing stops a runaway rapid from hitting the
+    # end of the rail. Raise further only once those switches exist.
+    max_rate_mm_per_min: 8000.000
+    # Low: a standing chess piece topples easily. This, not max_rate, is
+    # what caps short moves -- reaching 8000 needs 29.6mm of runway and a
+    # square is only 57mm, so most board moves never hit top speed.
     acceleration_mm_per_sec2: 300.000
     # 720mm rail, 5mm margin.
     max_travel_mm: 715.000
@@ -75,7 +85,8 @@ axes:
   # ---------------------------------------------------------------- Y ----
   y:
     steps_per_mm: 80.000
-    max_rate_mm_per_min: 4000.000
+    # Same reasoning as X above.
+    max_rate_mm_per_min: 8000.000
     acceleration_mm_per_sec2: 300.000
     max_travel_mm: 715.000
     soft_limits: false
@@ -102,26 +113,44 @@ axes:
   #     pi * 1.0 * 20 = 62.832 mm/rev -> 3200 / 62.832 = 50.930
   # BLOCKED: replace once the actual pinion is known. A wrong value makes
   # every grip either miss the piece or drive the claw into the board.
+  #
+  # !! NO LIMIT SWITCH, NO HOMING, NO SOFT LIMITS !!
+  # Configured switchless ON PURPOSE so the axis can be bench-tested before
+  # the switch is wired. Z0 is wherever the carriage happens to sit at
+  # power-on -- it is NOT a repeatable datum. Consequences:
+  #
+  #   * PARK THE CARRIAGE AT THE TOP OF ITS TRAVEL BEFORE POWERING ON.
+  #     G0 Z-132 descends 132mm from wherever it starts, not from the top.
+  #   * The ONLY thing keeping the claw out of the table is the Pi-side
+  #     envelope check in tools/gcode_preview.py plus the planner never
+  #     emitting below Z_GRIP. There is no controller-side backstop.
+  #   * Jog in small steps for the first powered test: $J=G91 Z-10 F500.
+  #
+  # To restore the datum once the switch is wired: cycle: 1,
+  # soft_limits: true, limit_pos_pin: gpio.17:low:pu.
   z:
     steps_per_mm: 50.930
-    # Slower than XY: gravity assists one direction.
-    max_rate_mm_per_min: 1500.000
+    # Z moves 250-440mm per piece transferred -- more than XY does -- so
+    # this is the single biggest lever on how long a turn takes.
+    max_rate_mm_per_min: 2500.000
     acceleration_mm_per_sec2: 200.000
     max_travel_mm: 170.000
-    # Z has a real switch, so soft limits are meaningful here.
-    soft_limits: true
+    # Soft limits are measured against a homed datum. With no homing there
+    # is nothing to measure from, so this MUST stay false while cycle is 0.
+    soft_limits: false
     homing:
-      # Z homes FIRST so the claw is retracted before XY move.
-      cycle: 1
-      # Homes UP; top of travel becomes Z0, work envelope is 0 to -170.
+      # 0 = excluded from $H. The rest of this block is inert but kept so
+      # the intended frame stays recorded: homes UP, top of travel becomes
+      # Z0, work envelope 0 to -170.
+      cycle: 0
       positive_direction: true
       mpos_mm: 0.000
       feed_mm_per_min: 200.000
       seek_mm_per_min: 800.000
       settle_ms: 500
     motor0:
-      # Switch at the TOP of travel.
-      limit_pos_pin: gpio.17:low:pu
+      # Switch belongs at the TOP of travel. Not wired yet.
+      limit_pos_pin: NO_PIN
       hard_limits: false
       pulloff_mm: 3.000
       stepstick:
@@ -129,24 +158,53 @@ axes:
         direction_pin: gpio.33
 
   # ---------------------------------------------------------------- A ----
-  # The claw: NEMA 17 on the fourth TB6600, declared as an AXIS so
-  # G0 A<deg> queues in move order with XY/Z.
-  # Units read as DEGREES: 3200 pulse/rev / 360 deg = 8.889 steps per deg.
-  # This replaces the earlier rc_servo block, which would have pulsed a
-  # servo signal into a stepper driver and silently done nothing.
+  # The claw: an SG90 9g micro-servo. NOT a stepper, NOT on a TB6600.
+  # Declared as an AXIS (not a spindle) so G0 A<deg> queues in move order
+  # with XY/Z for free.
+  #
+  # FluidNC maps the pulse range linearly across the axis travel, so with
+  # max_travel_mm 90:
+  #     A0  -> 1000us   claw OPEN   (60mm outer)
+  #     A45 -> 1500us   claw CLOSED (45mm inner, gripping a piece)
+  #     A90 -> 2000us
+  # A0 and A45 are exactly CLAW_OPEN_A / CLAW_CLOSED_A in motion/config.py.
+  #
+  # THE KEY IS pwm_hz. FluidNC's internal field is _pwm_freq and the wiki
+  # prints "pwm_freq", but the parser only accepts pwm_hz -- verified
+  # against FluidNC/src/Motors/RcServo.h. Getting this wrong rejects the
+  # whole config and boots the stock "Test Drive no I/O" machine, which
+  # acks every G-code line while driving nothing.
+  #
+  # 1000-2000us is a safe subset of the SG90's ~500-2400us full sweep.
+  # POWER: an SG90 stalls near 700mA. Feed it from the 5V buck rail, NOT
+  # the ESP32's regulator, and share a common ground.
+  #
+  # This reverts the stepper block from cb8b3f3, which was written on the
+  # assumption that the claw was a NEMA 17. It is a servo, and there is no
+  # fifth TB6600 for it anyway: X(2) + Y(1) + Z(1) already uses all four.
+  # As a stepstick, FluidNC would have fired ~400 narrow 6us STEP pulses at
+  # gpio.19 instead of a 50Hz PWM, and the claw would never have gripped.
   a:
-    steps_per_mm: 8.889
-    max_rate_mm_per_min: 9000.000
+    # "mm" reads as DEGREES here. Only the ratio matters to the pulse
+    # mapping, so 1.0 keeps A<deg> literal.
+    steps_per_mm: 1.000
+    # 100 deg/s. A 45deg open/close takes ~0.45s, which the planner's
+    # G4 P0.5 dwell covers.
+    max_rate_mm_per_min: 6000.000
     acceleration_mm_per_sec2: 1000.000
-    max_travel_mm: 360.000
+    max_travel_mm: 90.000
     soft_limits: false
     homing:
+      # A servo knows its own position; never homed.
       cycle: 0
+      positive_direction: false
+      mpos_mm: 0.000
     motor0:
-      hard_limits: false
-      stepstick:
-        step_pin: gpio.19
-        direction_pin: gpio.23
+      rc_servo:
+        pwm_hz: 50
+        output_pin: gpio.19
+        min_pulse_us: 1000
+        max_pulse_us: 2000
 
 kinematics:
   Cartesian:
@@ -162,11 +220,12 @@ start:
 # KNOWN GAPS - read before the first powered run
 # =========================================================================
 #
-# 1. NO X OR Y LIMIT SWITCHES. The pin table lists only one, on Z
-#    (gpio.17). Without them there is no repeatable origin: after every
-#    power cycle the controller has no idea where square a1 is, so $H
-#    cannot establish the coordinate frame the Pi-side planner assumes.
-#    This is the single largest risk to a working demo.
+# 1. NOTHING IS HOMED. X and Y have no limit switches, and Z's is not
+#    wired yet, so all three axes are cycle: 0. $H therefore has NO axes
+#    to home and will error -- `main.py --no-home` is MANDATORY, not just
+#    recommended. After every power cycle the controller has no idea where
+#    square a1 is, nor how high the claw sits. This is the single largest
+#    risk to a working demo.
 #
 #    Stopgap until wired - after each power-up, once:
 #        $J=G91 X10 F1000     (jog until the claw is centred over a1)
@@ -174,19 +233,24 @@ start:
 #    Prefer G10 L20 over G92: G92 is an offset that survives in ways that
 #    surprise you, G10 L20 sets the work coordinate system directly.
 #
+#    For Z there is no equivalent stopgap - park the carriage at the top
+#    of its travel BEFORE powering on. See the warning on the z: block.
+#
 # 2. TB6600 CURRENT DIPS are set on the drivers, not here. Set at or just
 #    BELOW the motor's rated current per phase - above it is the only
 #    setting that can physically cook a motor:
-#        NEMA 23 @ 2.8A rated -> 2.5A  (S4 OFF, S5 ON,  S6 ON)
-#        NEMA 17 @ 1.5A rated -> 1.5A  (S4 ON,  S5 ON,  S6 OFF)
+#        NEMA 23 @ 2.8A rated -> 2.5A  (S4 OFF, S5 ON,  S6 ON)   X x2, Y
+#        NEMA 17 @ 1.5A rated -> 1.5A  (S4 ON,  S5 ON,  S6 OFF)  Z only
 #    VERIFY: confirm the NEMA 23s are the 2.8A part, not the 4.2A
 #    high-torque one. The TB6600 caps at 3.5A continuous either way.
+#    The claw is a servo and has NO driver - do not set DIPs for it.
 #
 # 3. MICROSTEPPING must be 1/16 on all four drivers (S1 OFF, S2 OFF,
 #    S3 ON) to match the steps_per_mm above.
 #
-# 4. PIN ASSIGNMENTS for the A axis (gpio.19 step, gpio.23 dir) need
-#    Role 4's sign-off against the physical pin table.
+# 4. THE CLAW SERVO takes a single signal wire on gpio.19. gpio.23 is now
+#    FREE - it was the DIR pin of the stepper claw that never existed.
+#    Power the SG90 from the 5V buck rail, not the ESP32.
 #
 # 5. AVOID on ESP32: gpio 0/2/5/12/15 (strapping), 6-11 (SPI flash),
 #    1/3 (UART0 console), 34-39 (input only).

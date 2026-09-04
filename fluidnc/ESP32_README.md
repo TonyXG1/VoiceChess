@@ -145,8 +145,8 @@ source venv/bin/activate
 # link test only
 python serial_test.py /dev/ttyUSB0
 
-# dry run — validates every planner scenario, moves nothing
-python dry_run.py /dev/ttyUSB0
+# dry run — validates every planner scenario, moves nothing, needs no board
+python tools/gcode_preview.py --all
 
 # full app, text input
 python main.py --text --script "e2e4,e7e5" --serial /dev/ttyUSB0 --no-home
@@ -155,8 +155,8 @@ python main.py --text --script "e2e4,e7e5" --serial /dev/ttyUSB0 --no-home
 python main.py --tts espeak --voice male --serial /dev/ttyUSB0 --no-home
 ```
 
-**`--no-home` is mandatory until X and Y limit switches exist.** Without it
-`$H` runs, fails, and throws `ALARM:9 Homing Fail Approach`.
+**`--no-home` is mandatory.** No axis is configured for homing (all are
+`cycle: 0`), so `$H` has nothing to home and errors out.
 
 ---
 
@@ -222,10 +222,13 @@ The boot log is the validation. A good boot shows:
 [MSG:INFO: Stepping:RMT Pulse:6us ... Idle Delay:255ms]
 [MSG:INFO: Axis count 4]
 [MSG:INFO:     stepstick Step:gpio.13 Dir:gpio.14 Disable:NO_PIN]
+[MSG:INFO:     rc_servo Pin:gpio.19]
 [MSG:INFO: AP started]
 ```
 
-with **zero `[MSG:ERR:` lines**.
+with **zero `[MSG:ERR:` lines**. The `rc_servo` line is the one to check
+after the claw change — a `stepstick` line for the A axis means the old
+stepper config is still on the board.
 
 Two failure signatures to recognise:
 
@@ -249,9 +252,10 @@ Two failure signatures to recognise:
 | Y dir | 26 | |
 | Z step | 25 | |
 | Z dir | 33 | |
-| Z limit (top) | 17 | `gpio.17:low:pu` — the only switch we have |
-| A (claw) step | 19 | **needs hardware sign-off** |
-| A (claw) dir | 23 | **needs hardware sign-off** |
+| Z limit (top) | 17 | **not wired — set to `NO_PIN`, homing disabled** |
+| A (claw) servo signal | 19 | SG90, `rc_servo` — one wire, no driver |
+
+`gpio.23` was the DIR pin of a stepper claw that does not exist. It is free.
 
 ### GPIO pins to never use on ESP32
 
@@ -283,11 +287,12 @@ $X
 
 Normal after every boot. Not a fault.
 
-### Homing fails with `ALARM:9 Homing Fail Approach`
+### `$H` errors, or homing fails with `ALARM:9 Homing Fail Approach`
 
-Expected until the Z motor and its limit switch are wired. The controller
-commanded Z toward the switch, nothing moved, and it searched past the end
-of travel. Use `--no-home`.
+Expected. No axis is configured for homing, so there is nothing for `$H` to
+do. Use `--no-home`. (Once a switch is wired but the motor is not, you get
+`ALARM:9` instead: the controller commanded the axis toward the switch,
+nothing moved, and it searched past the end of travel.)
 
 ### The FluidNC WiFi network disappeared
 
@@ -378,7 +383,9 @@ current per phase.
 | Motor | Rated | Set to | S4 | S5 | S6 |
 |---|---|---|---|---|---|
 | NEMA 23 (X ×2, Y) | 2.8 A | 2.5 A | OFF | ON | ON |
-| NEMA 17 (Z, claw) | 1.5 A | 1.5 A | ON | ON | OFF |
+| NEMA 17 (Z) | 1.5 A | 1.5 A | ON | ON | OFF |
+
+The claw is a servo and has no driver — there are no DIPs to set for it.
 
 **VERIFY FIRST:** confirm the NEMA 23s are the 2.8 A part and not the 4.2 A
 high-torque variant. The TB6600 caps at 3.5 A continuous either way.
@@ -410,12 +417,26 @@ stop, and it only works if a terminal is open.
 
 ### C. Limit switches — the biggest remaining risk
 
-Only Z has a switch (gpio.17). **X and Y have none.** Without them there is
-no repeatable origin: after every power cycle the controller has no idea
-where square a1 is, so `$H` cannot establish the coordinate frame the
-Pi-side planner assumes.
+**No axis is homed.** X and Y have no switches, and Z's (gpio.17) is not
+wired yet, so all three are `cycle: 0` and `limit_*_pin: NO_PIN`. `$H` has
+nothing to home and will error — **`--no-home` is mandatory**, not merely
+recommended.
 
-Wire X and Y limit switches, then in `config.yaml` for each axis:
+Without a datum the controller has no idea where square a1 is, nor how high
+the claw sits, after any power cycle.
+
+**Z is configured switchless on purpose** so the axis can be bench-tested
+before its switch goes in. Two consequences that bite:
+
+- **Park the Z carriage at the top of its travel before powering on.** Z0 is
+  wherever it happens to sit, so `G0 Z-132` descends 132 mm from *there*, not
+  from the top.
+- `soft_limits` is `false` on Z because soft limits are measured against a
+  homed datum. Nothing on the controller stops the claw being driven into the
+  table — the only guards are the Pi-side envelope check in
+  `tools/gcode_preview.py` and the planner never emitting below `Z_GRIP`.
+
+Wire the switches, then in `config.yaml`:
 
 ```yaml
     soft_limits: true
@@ -425,7 +446,8 @@ Wire X and Y limit switches, then in `config.yaml` for each axis:
       limit_neg_pin: gpio.<pin>:low:pu
 ```
 
-(Z uses `cycle: 1` so it retracts first; X and Y share `cycle: 2`.)
+Z goes back to `cycle: 1` with `limit_pos_pin: gpio.17:low:pu` and
+`soft_limits: true` so it retracts first; X and Y share `cycle: 2`.
 
 Then set `must_home: true` under `start:` and drop `--no-home` from the
 `main.py` command line.
@@ -475,12 +497,40 @@ the claw into the board. Measure before the claw goes near a real piece.
 
 ### F. Claw axis
 
-The claw is a **NEMA 17 on the fourth TB6600**, not a servo. The config
-declares it as axis `A` with `steps_per_mm: 8.889` (3200 / 360), so units
-read as degrees and `G0 A55` means 55 degrees of jaw travel.
+The claw is an **SG90 9g micro-servo**, not a stepper and not on a TB6600.
+It takes a single signal wire on **gpio.19**. There is no fourth driver
+available for it anyway — X (×2), Y and Z already consume all four TB6600s.
 
-Confirm the gpio.19 / gpio.23 assignment against the physical pin table,
-then tune the open and closed angles against a real chess piece.
+The config declares it as axis `A` with an `rc_servo` motor, so `G0 A<deg>`
+queues in move order with XY/Z. FluidNC maps the pulse range linearly across
+the axis travel:
+
+| Command | Pulse | Jaw state |
+|---|---|---|
+| `G0 A0` | 1000 µs | open, 60 mm outer |
+| `G0 A45` | 1500 µs | closed on a piece, 45 mm inner |
+| `G0 A90` | 2000 µs | full sweep end |
+
+`A0` and `A45` are exactly `CLAW_OPEN_A` / `CLAW_CLOSED_A` in
+`motion/config.py`. Tune those two angles against a real chess piece.
+
+**The YAML key is `pwm_hz`.** FluidNC's internal field is `_pwm_freq` and the
+wiki prints `pwm_freq`, but the parser only accepts `pwm_hz` — verified
+against `FluidNC/src/Motors/RcServo.h`. Get it wrong and the whole config is
+rejected, booting the stock `Test Drive no I/O` machine that acks every line
+while driving nothing.
+
+**Power:** an SG90 stalls near 700 mA. Feed it from the 5 V buck rail, *not*
+the ESP32's regulator, and share a common ground. 1000–2000 µs is a safe
+subset of the SG90's ~500–2400 µs full sweep.
+
+**gpio.23 is now free** — it was the DIR pin of a stepper claw that does not
+exist.
+
+> Earlier revisions of this file and of `config.yaml` claimed the claw was a
+> NEMA 17. That was wrong. As a `stepstick`, FluidNC would have fired ~400
+> narrow 6 µs STEP pulses at gpio.19 instead of a 50 Hz PWM, and the claw
+> would never have gripped.
 
 ---
 
@@ -491,12 +541,18 @@ Each step isolates one thing. Do not skip ahead.
 1. Set all DIP switches (current + microstepping) — **before power**.
 2. Power on, `$X`, `?` — confirm `<Idle|MPos:0.000,0.000,0.000,0.000|...>`
    with four numbers.
-3. `python dry_run.py /dev/ttyUSB0` — all scenarios accepted, nothing moves.
+3. `python tools/gcode_preview.py --all` — every scenario planned and
+   envelope-checked on the Pi, nothing moves.
 4. Motors **disconnected**: stream a job, poll `?`, watch `MPos` walk to the
    target and return to `Idle`.
-5. Reconnect **X only**: `$J=G91 X10 F500`. Check direction, check both
+5. **Claw first — it needs no motors wired.** `G0 A0` then `G0 A45` and watch
+   the jaws. This is the change most likely to be wrong, and the cheapest to
+   check.
+6. Reconnect **X only**: `$J=G91 X10 F500`. Check direction, check both
    ganged motors agree.
-6. `$J=G91 X100 F500`, measure, correct `steps_per_mm`.
-7. Repeat 5–6 for Y, then Z, then A.
-8. Wire X/Y limit switches, update config, test `$H`.
-9. Set work zero over a1, run a full move with a real piece on the board.
+7. `$J=G91 X100 F500`, measure, correct `steps_per_mm`.
+8. Repeat 6–7 for Y, then Z. **Z with the carriage parked at the top and in
+   small steps** (`$J=G91 Z-10 F500`) — there is no switch and no soft limit
+   to catch an overrun. Measure before trusting `steps_per_mm: 50.930`.
+9. Wire the Z limit switch, then X/Y limit switches; update config, test `$H`.
+10. Set work zero over a1, run a full move with a real piece on the board.

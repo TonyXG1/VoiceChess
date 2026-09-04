@@ -29,8 +29,8 @@ _WORD = re.compile(r"([XYZAFP])(-?\d+\.?\d*)")
 
 # Rapids take their speed from the FluidNC YAML, not from the G-code, so the
 # timing estimate needs those numbers here. Keep in sync with fluidnc/config.yaml.
-MAX_RATE_XY = 4000.0   # mm/min
-MAX_RATE_Z = 1500.0    # mm/min
+MAX_RATE_XY = 8000.0   # mm/min
+MAX_RATE_Z = 2500.0    # mm/min
 
 
 class Violation(Exception):

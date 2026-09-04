@@ -5,6 +5,66 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-09-04
+
+Corrects the FluidNC config against the real hardware. Scope: `fluidnc/`,
+`motion/config.py`, `tools/`. No planner logic changed and no emitted G-code
+changed — `plan()` produces byte-identical output.
+
+### Fixed
+
+- **The claw would never have gripped** (`fluidnc/config.yaml`): the A axis was
+  declared as a `stepstick`, so FluidNC would have fired ~400 narrow 6µs STEP
+  pulses at gpio.19 instead of a 50Hz PWM. The claw is an **SG90 9g micro-servo**.
+  Reverted to `rc_servo` (`pwm_hz: 50`, 1000–2000µs, `max_travel_mm: 90`), which
+  maps `A0 -> 1000µs` open and `A45 -> 1500µs` closed — exactly what
+  `CLAW_OPEN_A` / `CLAW_CLOSED_A` already assumed.
+
+  This undoes the A-axis change from `cb8b3f3`, whose stated reason ("would have
+  pulsed a servo signal into a stepper driver") only held if the claw were a
+  stepper. Every other file in the repo — `CLAUDE.md`, `motion/config.py`,
+  `motion/planner.py`, the tests, and `gcode_preview.py`'s 0–90 A clamp — had
+  continued to describe a servo. There is also no fifth TB6600 for a stepper
+  claw: X(2) + Y(1) + Z(1) already uses all four. **`gpio.23` is now free.**
+
+  The YAML key is `pwm_hz`, *not* the `pwm_freq` the FluidNC wiki prints —
+  verified against `FluidNC/src/Motors/RcServo.h`.
+
+### Changed
+
+- **XY rapids 4000 -> 8000 mm/min, Z 1500 -> 2500** (`fluidnc/config.yaml`,
+  mirrored in `tools/gcode_preview.py`). The 4000 was set in the first commit and
+  was the only conservative number in the file with no written rationale; it
+  cannot simply be removed, since `max_rate_mm_per_min` is required and defaults
+  to 1000. Z mattered more than XY: a transfer moves Z by 250–440mm, more than it
+  moves XY. Measured effect on planned move times: 21–35% faster.
+  `acceleration_mm_per_sec2: 300` is unchanged — it is the anti-topple value, and
+  it is what actually caps short moves (reaching 8000 needs 29.6mm of runway; a
+  square is 57mm). `F_CARRY` is unchanged at 1200.
+- **Z configured switchless** (`fluidnc/config.yaml`): `limit_pos_pin: NO_PIN`,
+  `homing.cycle: 0`, `soft_limits: false`, so the axis can be bench-tested before
+  its switch is wired. The negative envelope was already correct and is unchanged
+  (`Z_TOP = 0`, board at `-150`). **No axis is now homed at all, so `$H` has
+  nothing to home and `--no-home` is mandatory.** With no datum and no soft
+  limits there is no controller-side backstop — the Z carriage must be parked at
+  the top of its travel before power-on.
+- **Piece heights encoded** (`motion/config.py`): `PIECE_HEIGHTS` now holds all
+  six measured heights (king 95, queen 75, bishop 65, knight 58, rook 46, pawn
+  45) and `TALLEST_PIECE` / `LIFT_HIGH` derive from it, replacing a hand-typed
+  `95.0`. Added `CLAW_OPEN_MM` / `CLAW_GRIP_MM` (60/45) and `RAIL_LENGTH` (720),
+  which had been comment-only. Values are unchanged — this makes them auditable.
+- **Graveyard spacing is now checked, not asserted in a comment**
+  (`motion/config.py`): `_check()` fails at import if `GRAVEYARD_DX` is not wider
+  than the claw's open outer width.
+
+### Notes
+
+- Board square geometry (`57.0 x 57.375`) is **deliberately untouched** pending
+  re-measurement. The supplied figures conflict: 8 x 58 = 464, not the measured
+  456mm a–h span.
+- `steps_per_mm: 50.930` on Z is still the unverified module-1.0 / 20-tooth
+  pinion assumption, and is now the largest remaining calibration risk.
+
 ## [0.4.0] - 2026-08-10
 
 Retargets the motion path from placeholder geometry to the real machine. Scope:

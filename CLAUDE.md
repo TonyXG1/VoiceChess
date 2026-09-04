@@ -146,10 +146,13 @@ real bugs here; don't reintroduce them:
   Only `G1` carries a feed word.
 - **The claw is the A axis** (`rc_servo` on gpio.19), not a spindle: `G0 A0` opens,
   `G0 A45` closes. As an axis it queues in move order with XY/Z for free. A bare
-  `M3` would be a no-op anyway (spindle speed defaults to 0).
-- **FluidNC boots into Alarm** with homing enabled and answers every G-code line
+  `M3` would be a no-op anyway (spindle speed defaults to 0). The YAML key is
+  `pwm_hz`, not the `pwm_freq` the FluidNC wiki prints.
+- **FluidNC boots into Alarm** *when homing is enabled*, answering every G-code line
   with `error:9` until `$H` runs. `$H` is a `$` command, not G-code, so the serial
-  link owns it — never the planner.
+  link owns it — never the planner. **Right now homing is disabled on every axis**
+  (`must_home: false`, all cycles `0`), so it boots ready and `$H` has nothing to
+  home — `--no-home` is mandatory until switches are wired.
 
 Geometry (all in `motion/config.py`): squares are **57.0 x 57.375 mm**, derived from
 the board's measured 456 x 459 mm spans rather than the nominal 58 mm — the nominal
@@ -196,13 +199,18 @@ NEMA 17 on the claw:
 
 | Axis | Motor | Step | Dir | Extras |
 |---|---|---|---|---|
-| X | **2x** NEMA 23 (ganged, dual rail) | gpio.12, gpio.16 | gpio.14, gpio.18 | — |
+| X | **2x** NEMA 23 (ganged, dual rail) | gpio.13, gpio.16 | gpio.14, gpio.18 | — |
 | Y | NEMA 23 | gpio.27 | gpio.26 | — |
-| Z | **NEMA 17**, rack-and-pinion | gpio.25 | gpio.33 | limit `gpio.17:low:pu` |
-| A | **claw micro-servo** | — | — | `rc_servo` gpio.19, 1000-2000us @50Hz |
+| Z | **NEMA 17**, rack-and-pinion | gpio.25 | gpio.33 | limit gpio.17 — **not wired** |
+| A | **claw micro-servo (SG90)** | — | — | `rc_servo` gpio.19, 1000-2000us @50Hz |
 
-Motor count is unchanged (3x NEMA 23 + 1x NEMA 17); the *assignment* moved. The
-electronics BOM's MG996R servo line item — previously marked stale — is live again.
+X step is on **gpio.13, not gpio.12**: gpio.12 is the flash-voltage strapping pin, and
+a common-anode TB6600 pulls it high at boot, putting the ESP32 into a permanent boot
+loop that is only fixable by physically removing the wire.
+
+Motor count is 3x NEMA 23 + 1x NEMA 17 (X ×2, Y, Z) — that is all four TB6600s, so
+there is no driver spare for a stepper claw. The claw is an **SG90 9g micro-servo**
+on a single signal wire; it needs no driver. `gpio.23` is free.
 
 **Dimensions**: board 456mm (a-h) x 459mm (1-8), 57mm squares. Travel 720mm on X and
 Y, 170mm on Z. Claw opening 60mm outside / 45mm inside. Piece heights: king 95, queen
@@ -216,8 +224,10 @@ system.
 
 - **ESP32 firmware: FluidNC**, flashed as-is — no custom real-time firmware is being
   written. Role 4 owns the physical build; `fluidnc/config.yaml` now exists in-repo.
-- **Claw actuator: RC micro-servo on the A axis**, commanded `G0 A0` / `G0 A45`
-  (reverted from the NEMA 17 stepper; the pin table is the authority).
+- **Claw actuator: an SG90 9g micro-servo on the A axis**, commanded `G0 A0` /
+  `G0 A45` (reverted from the NEMA 17 stepper; the pin table is the authority).
+  `fluidnc/config.yaml` briefly declared it as a `stepstick` — that was wrong and
+  the claw would never have gripped. Confirmed SG90 by the team on 2026-09-04.
 - **Z-axis**: vertical drop via rack-and-pinion (uses pinion pitch circumference in
   the steps_per_mm calculation, unlike the belt-driven X/Y axes).
 - **Microstepping: 1/16 on all four drivers** (S1 OFF, S2 OFF, S3 ON) = 3200 pulse/rev
@@ -228,10 +238,15 @@ system.
 
 ### Still open — flag if a software choice depends on one
 
-- **X and Y limit switches are not in the pin table** (only Z has one). Without them
-  `$H` cannot establish a repeatable origin, so after any power cycle the machine
-  does not know where a1 is. **This is the largest risk to a working demo.** Stopgap
-  documented in `fluidnc/config.yaml`: jog to a1 and `G92 X28.50 Y28.69`.
+- **No axis is homed.** X and Y have no limit switches in the pin table, and Z's
+  (gpio.17) is not wired yet, so all three are `cycle: 0` / `NO_PIN` and `$H` has
+  nothing to home. After any power cycle the machine knows neither where a1 is nor
+  how high the claw sits. **This is the largest risk to a working demo.** Stopgap
+  documented in `fluidnc/config.yaml`: jog to a1, then `G10 L20 P1 X0 Y0` (preferred
+  over `G92`, which is an offset that survives in surprising ways).
+  Z is switchless **on purpose** for bench testing, which means `soft_limits: false`
+  and no controller-side backstop — park the Z carriage at the top of its travel
+  before powering on, or every descent starts from the wrong place.
 - **Z pinion module + tooth count** — needed for Z `steps_per_mm`. The YAML currently
   assumes module 1.0 / 20 teeth (50.930 steps/mm). A wrong value here makes every
   grip miss the piece or drive the claw into the board.
