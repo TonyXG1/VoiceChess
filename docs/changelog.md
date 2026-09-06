@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- High loaded moves, including knights, now use one coordinated XY segment
+  whenever the direct path is clear. Safe detour waypoints remain in use only
+  when the segment would enter a square occupied by a king or queen.
 - Loaded gameplay carries now use `F2000` (2,000 mm/min, or 33.3 mm/s), raised
   from the original `F1200`. Empty X positioning is capped at 3,000 mm/min;
   unloaded Y positioning and Z rapids remain capped at 4,000 mm/min.
@@ -30,7 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pickup and grip are calibrated per piece: pawn Z85/A62, knight Z75/A76,
   bishop Z80/A43, rook Z90/A43, queen Z67/A35, and king Z67/A35. A0 remains
   open; positive Z moves down.
-- High loaded travel now runs at Z0 through adjacent square-centre waypoints.
+- High loaded travel now runs at Z0 with coordinated XY segments and safe
+  waypoints around protected squares.
   The orchestrator supplies current king/queen squares and the planner routes
   around them. The minimum 67 mm carried-piece clearance passes over the tallest
   remaining obstacle, the 65 mm bishop, with 2 mm clearance.

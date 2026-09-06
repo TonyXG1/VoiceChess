@@ -526,8 +526,9 @@ mechanical axis travel remains 170 mm; these are different measurements:
 | Board surface | 115 mm |
 | Mechanical bottom (not a board-move target) | 170 mm |
 
-High loaded travel uses Z0 and adjacent square-centre waypoints. The planner
-never routes a carried piece through a square occupied by a king or queen. The
+High loaded travel uses Z0 and coordinated XY motion, adding safe waypoints only
+when needed. The planner never routes a carried piece through a square occupied
+by a king or queen. The
 shallowest pickup is Z67, which clears the tallest unprotected piece, the 65 mm
 bishop, by 2 mm. Manual FluidNC bench tests remain available.
 

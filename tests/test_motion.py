@@ -202,11 +202,15 @@ def test_sliding_piece_carries_low(planner):
     ) == [70.0]
 
 def test_knight_carries_high(planner):
-    heights = _carry_heights(planner.plan(
+    gcode = planner.plan(
         "g1f3", high_lift=True, moving_piece="knight",
         protected_squares=("d1", "e1", "d8", "e8"),
-    ))
+    )
+    heights = _carry_heights(gcode)
     assert heights and set(heights) == {cfg.Z_HIGH_CARRY}
+    assert [code for code in _codes(gcode) if code.startswith("G1")] == [
+        "G1 X116.00 Y290.00 F2000"
+    ]
 
 def test_graveyard_trip_carries_high(planner):
     # The trip to the off-board grid crosses occupied squares either way.
@@ -259,6 +263,11 @@ def test_high_route_never_enters_protected_king_or_queen_squares(planner):
     assert loaded_xy
     assert protected_xy.isdisjoint(loaded_xy)
     assert loaded_xy[-1] == planner.square_to_coords("h8")
+    route = [planner.square_to_coords("a1"), *loaded_xy]
+    for start, end in zip(route, route[1:]):
+        assert planner._segment_clear_of_protected(
+            start, end, protected, "a1", "h8"
+        )
 
 def test_graveyard_route_uses_another_gate_when_edge_square_is_protected(planner):
     gcode = planner.plan(

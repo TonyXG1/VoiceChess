@@ -167,7 +167,7 @@ and king Z67/A35. Low carry is 15 mm above that piece's pickup Z.
 Requested top clearance is
 115 mm (11.5 cm) to the playing surface; physically set and verify it at Z0.
 Full mechanical travel remains 170 mm (bottom Z170). High loaded routes travel
-at Z0 through adjacent square centres while avoiding all king and queen squares.
+at Z0 with coordinated XY motion while avoiding all king and queen squares.
 The shallowest grip leaves 67 mm below the carried piece, clearing the tallest
 unprotected piece (65 mm bishop) by 2 mm. Off-board capture and promotion
 positions are configured.

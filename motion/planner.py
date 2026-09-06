@@ -166,6 +166,74 @@ class MotionPlanner:
         route.reverse()
         return route
 
+    @staticmethod
+    def _segment_intersects_box(
+            start: Tuple[float, float], end: Tuple[float, float],
+            minimum: Tuple[float, float], maximum: Tuple[float, float]) -> bool:
+        """Return whether a line segment enters or touches an XY rectangle."""
+        t_min, t_max = 0.0, 1.0
+        for origin, target, lower, upper in zip(start, end, minimum, maximum):
+            delta = target - origin
+            if abs(delta) < 1e-9:
+                if origin < lower or origin > upper:
+                    return False
+                continue
+            enter = (lower - origin) / delta
+            leave = (upper - origin) / delta
+            if enter > leave:
+                enter, leave = leave, enter
+            t_min = max(t_min, enter)
+            t_max = min(t_max, leave)
+            if t_min > t_max:
+                return False
+        return True
+
+    def _segment_clear_of_protected(
+            self, start: Tuple[float, float], end: Tuple[float, float],
+            protected_squares: Iterable[str], start_label: str,
+            end_label: str) -> bool:
+        """Check the whole segment against protected king/queen square areas."""
+        allowed = {start_label.lower(), end_label.lower()}
+        for square in protected_squares:
+            square = square.lower()
+            if not self._is_square(square) or square in allowed:
+                continue
+            cx, cy = self.square_to_coords(square)
+            minimum = (cx - cfg.SQUARE_X / 2, cy - cfg.SQUARE_Y / 2)
+            maximum = (cx + cfg.SQUARE_X / 2, cy + cfg.SQUARE_Y / 2)
+            if self._segment_intersects_box(start, end, minimum, maximum):
+                return False
+        return True
+
+    def _safe_board_route(self, start: str, end: str,
+                          protected_squares: Iterable[str]) \
+            -> List[Tuple[float, float]]:
+        """Prefer coordinated XY motion; add waypoints only around obstacles."""
+        start_xy = self.square_to_coords(start)
+        end_xy = self.square_to_coords(end)
+        protected = tuple(protected_squares)
+        if self._segment_clear_of_protected(
+                start_xy, end_xy, protected, start, end):
+            return [end_xy]
+
+        # BFS supplies a guaranteed-safe orthogonal route. Then remove every
+        # intermediate waypoint that a clear diagonal segment can bypass.
+        squares = [start, *self._square_route(start, end, protected)]
+        points = [self.square_to_coords(square) for square in squares]
+        simplified: List[Tuple[float, float]] = []
+        current = 0
+        while current < len(points) - 1:
+            candidate = len(points) - 1
+            while candidate > current + 1:
+                if self._segment_clear_of_protected(
+                        points[current], points[candidate], protected,
+                        start, end):
+                    break
+                candidate -= 1
+            simplified.append(points[candidate])
+            current = candidate
+        return simplified
+
     def _board_to_outside_route(
             self, board_square: str, outside: Tuple[float, float],
             protected_squares: Iterable[str]) -> List[Tuple[float, float]]:
@@ -212,13 +280,12 @@ class MotionPlanner:
         errors = []
         for _, gate, corridor in sorted(candidates):
             try:
-                squares = self._square_route(
+                points = self._safe_board_route(
                     board_square, gate, protected_squares
                 )
             except ValueError as exc:
                 errors.append(str(exc))
                 continue
-            points = [self.square_to_coords(square) for square in squares]
             points.extend([corridor, outside])
             return self._dedupe_points(points)
         raise ValueError("; ".join(errors))
@@ -243,8 +310,9 @@ class MotionPlanner:
         start_on_board = self._is_square(start_label)
         end_on_board = self._is_square(end_label)
         if start_on_board and end_on_board:
-            return [self.square_to_coords(square) for square in
-                    self._square_route(start_label, end_label, protected_squares)]
+            return self._safe_board_route(
+                start_label, end_label, protected_squares
+            )
         if start_on_board:
             return self._board_to_outside_route(
                 start_label, end, protected_squares
