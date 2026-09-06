@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The opening announcement now says `You are playing as White`.
 - High loaded moves, including knights, now use one coordinated XY segment
   whenever the direct path is clear. Safe detour waypoints remain in use only
   when the segment would enter a square occupied by a king or queen.

@@ -423,7 +423,9 @@ def test_orchestrator_announces_every_human_turn(monkeypatch):
 
     orch.run(max_turns=1)
 
-    assert speaker.messages[:2] == ["New game. You are White.", "Your turn."]
+    assert speaker.messages[:2] == [
+        "New game. You are playing as White.", "Your turn."
+    ]
     ai_announcement = speaker.messages.index("A I plays Pawn to e5")
     assert speaker.messages[ai_announcement + 1] == "Your turn."
     assert speaker.messages.count("Your turn.") == 2

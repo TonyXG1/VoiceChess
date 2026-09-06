@@ -125,7 +125,7 @@ class Orchestrator:
         # put the machine into a known G-code state (mm, absolute, claw open).
         self.planner.reset()
         self.serial.send(self.planner.startup().splitlines())
-        eng.speak("New game. You are White.")
+        eng.speak("New game. You are playing as White.")
         eng.speak("Your turn.")
 
         turn = 0
