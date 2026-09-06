@@ -39,15 +39,15 @@ axes:
   x:
     # 200 full-steps * 16 / (20T * 2mm GT2) = 80
     steps_per_mm: 80.000
-    # 2000 mm/min = 33 mm/s = 50 rev/min on a 20T GT2 pulley -- well
+    # 1000 mm/min = 17 mm/s = 25 rev/min on a 20T GT2 pulley -- well
     # inside a NEMA 23's torque band at 24V, and only 5.3k steps/s per
     # motor, nowhere near the RMT engine's ceiling.
     # THE REAL CEILING IS NOT ELECTRICAL: X and Y have no limit switches
     # and no soft limits, so nothing stops a runaway rapid from hitting the
     # end of the rail. Raise further only once those switches exist.
-    max_rate_mm_per_min: 2000.000
+    max_rate_mm_per_min: 1000.000
     # Low: a standing chess piece topples easily. This, not max_rate, is
-    # what caps short moves -- reaching 2000 needs 1.9mm of runway and a
+    # what caps short moves -- reaching 1000 needs 0.5mm of runway and a
     # square is only 58mm, so most board moves never hit top speed.
     acceleration_mm_per_sec2: 300.000
     # Measured usable +X travel from a1 along the a-file toward a8.
