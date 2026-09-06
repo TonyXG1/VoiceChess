@@ -29,7 +29,8 @@ _WORD = re.compile(r"([XYZAFP])(-?\d+\.?\d*)")
 
 # Rapids take their speed from the FluidNC YAML, not from the G-code, so the
 # timing estimate needs those numbers here. Keep in sync with fluidnc/config.yaml.
-MAX_RATE_XY = 4000.0   # mm/min
+MAX_RATE_X = 3000.0    # mm/min
+MAX_RATE_Y = 4000.0    # mm/min
 MAX_RATE_Z = 4000.0    # mm/min
 
 
@@ -95,7 +96,11 @@ def simulate(gcode: str, verbose: bool = True) -> Tuple[float, float, List[str]]
         elif code.startswith("G1") and feed > 0:
             step_s = (seg + dz) / feed * 60.0
         elif code.startswith("G0"):
-            step_s = (seg / MAX_RATE_XY + dz / MAX_RATE_Z) * 60.0
+            # A coordinated rapid is limited by whichever participating axis
+            # needs longest at its own configured maximum rate.
+            xy_s = max(abs(nx - x) / MAX_RATE_X,
+                       abs(ny - y) / MAX_RATE_Y) * 60.0
+            step_s = xy_s + dz / MAX_RATE_Z * 60.0
         else:
             step_s = 0.0
 
