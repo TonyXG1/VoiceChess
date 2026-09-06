@@ -48,10 +48,10 @@ axes:
     max_rate_mm_per_min: 4000.000
     # Low: a standing chess piece topples easily. This, not max_rate, is
     # what caps short moves -- reaching 4000 needs 7.4mm of runway and a
-    # square is only 60mm, so most board moves never hit top speed.
+    # square is only 58mm, so most board moves never hit top speed.
     acceleration_mm_per_sec2: 300.000
-    # Measured usable +X travel from the centre of a1.
-    max_travel_mm: 540.000
+    # Measured usable +X travel from a1 along the a-file toward a8.
+    max_travel_mm: 535.000
     soft_limits: false
     homing:
       cycle: 0
@@ -86,8 +86,8 @@ axes:
     # Same reasoning as X above.
     max_rate_mm_per_min: 4000.000
     acceleration_mm_per_sec2: 300.000
-    # Measured usable +Y travel from the centre of a1.
-    max_travel_mm: 550.000
+    # Measured usable +Y travel from a1 along rank 1 toward h1.
+    max_travel_mm: 545.000
     soft_limits: false
     homing:
       cycle: 0
@@ -108,10 +108,9 @@ axes:
   # NEMA 17 on rack-and-pinion, so steps_per_mm uses the pinion's PITCH
   # CIRCUMFERENCE, not a belt pitch:
   #     steps_per_mm = 200 * 16 / (pi * module * pinion_teeth)
-  # Assumes module 1.0, 20-tooth pinion:
-  #     pi * 1.0 * 20 = 62.832 mm/rev -> 3200 / 62.832 = 50.930
-  # BLOCKED: replace once the actual pinion is known. A wrong value makes
-  # every grip either miss the piece or drive the claw into the board.
+  # The theoretical module-1.0, 20-tooth estimate was 50.930 steps/mm.
+  # Bench calibration commanded 100 units and measured 20 mm of travel:
+  #     50.930 * (100 / 20) = 254.650 steps/mm
   #
   # !! NO LIMIT SWITCH, NO HOMING, NO SOFT LIMITS !!
   # Configured switchless ON PURPOSE so the axis can be bench-tested before
@@ -121,25 +120,26 @@ axes:
   # Consequences:
   #
   #   * PARK THE CARRIAGE AT THE TOP BEFORE POWERING ON OR RESETTING.
-  #     Z0 is fully up; negative Z lowers the claw. Full travel ends at Z-170.
-  #     The board is Z-115; normal piece pickup is Z-97, not the travel bottom.
+  #     Z0 is fully up; positive Z lowers the claw. Full travel ends at Z170.
+  #     The board is Z115; measured pickups range from Z67 to Z90.
   #     Physically set 115mm clearance to the playing surface at the top.
   #   * The ONLY thing keeping the claw out of the table is the Pi-side
   #     envelope check in tools/gcode_preview.py. There is no controller-side
   #     backstop.
-  #   * Jog down in small steps for the first test: $J=G91 G21 Z-10 F500.
+  #   * Jog down in small steps for the first test: $J=G91 G21 Z10 F500.
   #
   # To restore the datum once the switch is wired: cycle: 1,
-  # soft_limits: true, limit_pos_pin: gpio.17:low:pu.
+  # soft_limits: true, limit_neg_pin: gpio.17:low:pu.
   z:
-    steps_per_mm: 50.930
+    steps_per_mm: 254.650
     # At the top: set the lowest part of the gripper 115mm above the playing
-    # surface. The board is Z-115; top is Z0.
-    # Keep full mechanical travel at 170mm. Pi automatic play remains blocked:
-    # its 18mm grip offset plus 102mm high lift needs 120mm top clearance.
+    # surface. The board is Z115; top is Z0.
+    # Keep full mechanical travel at 170mm. High loaded travel is at Z0 and
+    # routes around king/queen squares; the shallowest grip clears a 65mm
+    # bishop by 2mm at the top.
     # Z moves 250-440mm per piece transferred -- more than XY does -- so
-    # this is the single biggest lever on how long a turn takes. At 50.930
-    # steps/mm, 4000mm/min is only about 3.4k step pulses/s. Keep the lower
+    # this is the single biggest lever on how long a turn takes. At 254.650
+    # steps/mm, 4000mm/min is about 17k step pulses/s. Keep the lower
     # acceleration to preserve lifting torque and reduce missed-step risk.
     max_rate_mm_per_min: 4000.000
     acceleration_mm_per_sec2: 200.000
@@ -149,17 +149,17 @@ axes:
     soft_limits: false
     homing:
       # 0 = excluded from $H. The rest of this block is inert but kept so
-      # the intended frame stays recorded: homes UP, top of travel is Z0,
-      # and the mechanical envelope is Z-170 to Z0.
+      # the intended frame stays recorded: homes UP toward negative Z, top of
+      # travel is Z0, and the mechanical envelope is Z0 to Z170.
       cycle: 0
-      positive_direction: true
+      positive_direction: false
       mpos_mm: 0.000
       feed_mm_per_min: 200.000
       seek_mm_per_min: 800.000
       settle_ms: 500
     motor0:
-      # Switch belongs at the TOP of travel. Not wired yet.
-      limit_pos_pin: NO_PIN
+      # Switch belongs at the TOP (negative-Z end) of travel. Not wired yet.
+      limit_neg_pin: NO_PIN
       hard_limits: false
       pulloff_mm: 3.000
       stepstick:
@@ -174,9 +174,12 @@ axes:
   # FluidNC maps the pulse range linearly across the axis travel, so with
   # max_travel_mm 90:
   #     A0  -> 1000us   claw OPEN   (60mm outer)
-  #     A45 -> 1500us   claw CLOSED (45mm inner, gripping a piece)
+  #     A35 -> 1389us   measured queen/king grip
+  #     A43 -> 1478us   measured bishop/rook grip
+  #     A62 -> 1689us   measured pawn grip
+  #     A76 -> 1844us   measured knight grip
   #     A90 -> 2000us
-  # A0 and A45 are exactly CLAW_OPEN_A / CLAW_CLOSED_A in motion/config.py.
+  # These angles are the PIECE_GRIP_PROFILES in motion/config.py.
   #
   # THE KEY IS pwm_hz. FluidNC's internal field is _pwm_freq and the wiki
   # prints "pwm_freq", but the parser only accepts pwm_hz -- verified
@@ -247,7 +250,7 @@ start:
 #        G54
 #        $J=G91 X10 F1000     (jog until the claw is centred over a1)
 #        G10 L20 P1 X0 Y0     (declare that spot as work zero)
-#    The CENTRE of a1 is X0 Y0; b1 is X60 Y0 and a2 is X0 Y60.
+#    The CENTRE of a1 is X0 Y0; b1 is X0 Y58 and a2 is X58 Y0.
 #    Prefer G10 L20 over G92: G92 is an offset that survives in ways that
 #    surprise you, G10 L20 sets the work coordinate system directly.
 #

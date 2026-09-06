@@ -51,7 +51,7 @@ class Orchestrator:
         ``high_lift`` is True only for knights. Every other piece slides, so
         chess rules already guarantee its path is empty and the gantry can
         carry it low and fast; a knight jumps over pieces and must be lifted
-        clear of the 95 mm king. This is the one bit of chess knowledge the
+        to Z0. This is one bit of chess knowledge the
         motion path needs, and it is derived here so Role 3 never imports
         ``chess`` (see CLAUDE.md's module ownership rule).
         """
@@ -70,15 +70,48 @@ class Orchestrator:
             # Malformed UCI: apply() will reject it; flags are never used.
             return "standard", False, False
 
+    def _motion_context(self, uci: str) \
+            -> Tuple[str, str | None, Tuple[str, ...]]:
+        """Return mover, captured piece, and current king/queen squares.
+
+        This must run before applying the move. The planner stays independent
+        of python-chess while still receiving the physical profile for each
+        piece and the squares a loaded route must never cross.
+        """
+        move = chess.Move.from_uci(uci)
+        board = self.engine.board
+        moving_type = board.piece_type_at(move.from_square)
+        if moving_type is None:
+            raise ValueError(f"No piece exists at {uci[:2]} for move {uci}.")
+        moving_piece = chess.piece_name(moving_type)
+
+        captured_type = board.piece_type_at(move.to_square)
+        if board.is_en_passant(move):
+            captured_type = chess.PAWN
+        captured_piece = (chess.piece_name(captured_type)
+                          if captured_type is not None else None)
+
+        protected = tuple(
+            chess.square_name(square)
+            for square, piece in board.piece_map().items()
+            if piece.piece_type in (chess.KING, chess.QUEEN)
+        )
+        return moving_piece, captured_piece, protected
+
     def _execute_motion(self, uci: str, move_type: str, is_capture: bool,
-                        high_lift: bool = False) -> None:
+                        high_lift: bool = False, moving_piece: str = "pawn",
+                        captured_piece: str | None = None,
+                        protected_squares: Tuple[str, ...] = ()) -> None:
         """Physically execute an applied move: plan G-code, stream it, wait.
 
         Used for BOTH the human and the AI move -- the gantry moves the
         pieces for both sides.
         """
         gcode = self.planner.plan(uci, move_type=move_type, is_capture=is_capture,
-                                  high_lift=high_lift)
+                                  high_lift=high_lift,
+                                  moving_piece=moving_piece,
+                                  captured_piece=captured_piece,
+                                  protected_squares=protected_squares)
         # Role 3 returns one newline-joined G-code string; the serial link
         # streams line by line.
         self.serial.send(gcode.splitlines())  # blocks until motion done (stub: prints)
@@ -135,6 +168,7 @@ class Orchestrator:
 
             # Classify for motion BEFORE applying (needs the pre-move board).
             move_type, is_capture, high_lift = self._classify_move(uci)
+            moving_piece, captured_piece, protected = self._motion_context(uci)
 
             # Apply via Role 2 (rules authority; nothing illegal passes).
             res = eng.apply(uci)
@@ -147,7 +181,10 @@ class Orchestrator:
             eng.speak(f"You said {res.readback}")
 
             # MOVE(human): Role 3 plans, Role 4 executes. No listening here.
-            self._execute_motion(res.uci, move_type, is_capture, high_lift)
+            self._execute_motion(
+                res.uci, move_type, is_capture, high_lift,
+                moving_piece, captured_piece, protected,
+            )
 
             if res.status.is_game_over:
                 break
@@ -156,11 +193,16 @@ class Orchestrator:
             # THINK: ask Stockfish (does not apply yet).
             ai_uci = eng.ai_move()
             ai_move_type, ai_is_capture, ai_high_lift = self._classify_move(ai_uci)
+            ai_moving_piece, ai_captured_piece, ai_protected = \
+                self._motion_context(ai_uci)
             ai_res = eng.apply(ai_uci)
             eng.speak(f"A I plays {ai_res.readback}")
 
             # MOVE(AI): same plan -> stream path as the human move.
-            self._execute_motion(ai_res.uci, ai_move_type, ai_is_capture, ai_high_lift)
+            self._execute_motion(
+                ai_res.uci, ai_move_type, ai_is_capture, ai_high_lift,
+                ai_moving_piece, ai_captured_piece, ai_protected,
+            )
 
             if ai_res.status.is_game_over:
                 break

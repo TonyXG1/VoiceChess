@@ -144,8 +144,9 @@ real bugs here; don't reintroduce them:
 - **`G4 P` is SECONDS.** `G4 P500` dwells for 8 minutes, not 500ms.
 - **`G0` ignores `F`.** Rapid speed comes from `max_rate_mm_per_min` in the YAML.
   Only `G1` carries a feed word.
-- **The claw is the A axis** (`rc_servo` on gpio.19), not a spindle: `G0 A0` opens,
-  `G0 A45` closes. As an axis it queues in move order with XY/Z for free. A bare
+- **The claw is the A axis** (`rc_servo` on gpio.19), not a spindle: `G0 A0` opens;
+  the measured grip angle depends on the piece (A35/A43/A62/A76). As an axis it
+  queues in move order with XY/Z for free. A bare
   `M3` would be a no-op anyway (spindle speed defaults to 0). The YAML key is
   `pwm_hz`, not the `pwm_freq` the FluidNC wiki prints.
 - **FluidNC boots into Alarm** *when homing is enabled*, answering every G-code line
@@ -154,31 +155,35 @@ real bugs here; don't reintroduce them:
   (`must_home: false`, all cycles `0`), so it boots ready and `$H` has nothing to
   home — `--no-home` is mandatory until switches are wired.
 
-Geometry (all in `motion/config.py`): confirmed squares are **60 x 60 mm**,
-with a 480 x 480 mm playing area and a 20 mm border on all four sides
-(520 x 520 mm overall). A square's coordinate is its CENTER, so
-`a1 = (0, 0)` is the work origin at a1's CENTRE; `h8 = (420, 420)`.
+Geometry (all in `motion/config.py`): confirmed squares are **58 x 58 mm**,
+with a 464 x 464 mm playing area and a 20 mm border on all four sides
+(504 x 504 mm overall). A square's coordinate is its CENTER, so
+`a1 = (0, 0)` is the work origin at a1's CENTRE; `h8 = (406, 406)`.
 There is no half-square offset in the planner. Start centred over a1.
-Z starts fully up at `Z0`
-and increases upward: `Z_TOP = 0`, board surface at `Z_BOARD = -115`, grip at
-`-97`, low carry `-82`, empty safe travel `0`. Requested top clearance is
+Z starts fully up at `Z0` and increases downward: `Z_TOP = 0`, board surface at
+`Z_BOARD = 115`, and empty/high travel is `Z0`. Measured pickup profiles are
+pawn Z85/A62, knight Z75/A76, bishop Z80/A43, rook Z90/A43, queen Z67/A35,
+and king Z67/A35. Low carry is 15 mm above that piece's pickup Z.
+Requested top clearance is
 115 mm (11.5 cm) to the playing surface; physically set and verify it at Z0.
-Full mechanical
-travel remains 170 mm (bottom Z-170). Automatic play is blocked at config
-import: the 18 mm grip offset plus 102 mm high lift needs 120 mm clearance,
-so the required high-carry target is unreachable Z+5. Do not bypass the check.
-Both X direction pins are inverted (`gpio.14:low`, `gpio.18:low`); logical
-board coordinates still increase from the a-file toward the h-file.
+Full mechanical travel remains 170 mm (bottom Z170). High loaded routes travel
+at Z0 through adjacent square centres while avoiding all king and queen squares.
+The shallowest grip leaves 67 mm below the carried piece, clearing the tallest
+unprotected piece (65 mm bishop) by 2 mm. Off-board capture and promotion
+positions are configured.
+Both X direction pins are inverted (`gpio.14:low`, `gpio.18:low`). On the built
+gantry, +X follows the a-file from a1 toward a8, while +Y follows rank 1 from a1
+toward h1. Thus `b1 = (0, 58)` and `a2 = (58, 0)`.
 
 **Lift policy** — the claw must never drag a piece across the board:
 
 - Sliding pieces (R/B/Q/K/P) carry LOW. Chess rules guarantee their path is empty.
-- Knights carry HIGH (clear of the 95mm king). This is the ONLY chess knowledge the
-  motion path needs, and the orchestrator derives it (`_classify_move` returns
-  `(move_type, is_capture, high_lift)`) so Role 3 never imports `chess`.
+- Knights carry HIGH at Z0. The orchestrator supplies the mover/captured piece
+  types and every current king/queen square, so Role 3 can choose the measured
+  profile and route around protected squares without importing `chess`.
 - Graveyard trips, the queen-reserve trip, and castling's ROOK leg are always HIGH —
-  each crosses occupied squares. (Kingside, the rook h1->f1 passes through g1 where
-  the king now stands; moving the rook first just swaps who is in whose way.)
+  each may cross occupied squares. Castling updates the protected square from the
+  king's old square to its new square before routing the rook.
 
 `tools/gcode_preview.py --all` asserts every scenario stays in the envelope; the
 same check runs in `tests/test_motion.py`, along with an invariant that XY never
@@ -221,14 +226,14 @@ Motor count is 3x NEMA 23 + 1x NEMA 17 (X ×2, Y, Z) — that is all four TB6600
 there is no driver spare for a stepper claw. The claw is an **SG90 9g micro-servo**
 on a single signal wire; it needs no driver. `gpio.23` is free.
 
-**Dimensions**: playing area 480 x 480mm, 60mm squares, 20mm border on all
-four sides (520 x 520mm overall; outer edges -50..470 from a1's centre).
+**Dimensions**: playing area 464 x 464mm, 58mm squares, 20mm border on all
+four sides (504 x 504mm overall; outer edges -49..455 from a1's centre).
 Usable travel from
-a1's centre is X0..540mm and Y0..550mm; full Z travel is 170mm.
+a1's centre is X0..535mm and Y0..545mm; full Z travel is 170mm.
 Claw opening 60mm outside / 45mm inside; confirmed internal depth 30mm
-(does not establish pickup height or servo endpoints). Piece heights: king 95, queen
-75, bishop 65, knight 58, rook 46, pawn 45 — the 95mm king sets `LIFT_HIGH`, and the
-45mm claw opening is what the piece bases must fit inside.
+(does not establish pickup height or servo endpoints). Piece heights: king 76, queen
+75, bishop 65, knight 58, rook 47, pawn 45. Loaded paths route around kings and
+queens; at Z0, every measured grip profile clears the 65 mm bishop.
 
 This is a gantry with **3 linear axes (X/Y/Z) plus a claw actuator** — not a 2-axis
 system.
@@ -237,19 +242,20 @@ system.
 
 - **ESP32 firmware: FluidNC**, flashed as-is — no custom real-time firmware is being
   written. Role 4 owns the physical build; `fluidnc/config.yaml` now exists in-repo.
-- **Claw actuator: an SG90 9g micro-servo on the A axis**, commanded `G0 A0` /
-  `G0 A45` (reverted from the NEMA 17 stepper; the pin table is the authority).
+- **Claw actuator: an SG90 9g micro-servo on the A axis**, opened with `G0 A0`;
+  measured closing commands are piece-specific A35/A43/A62/A76 (reverted from
+  the NEMA 17 stepper; the pin table is the authority).
   `fluidnc/config.yaml` briefly declared it as a `stepstick` — that was wrong and
   the claw would never have gripped. Confirmed SG90 by the team on 2026-09-04.
 - **Z-axis**: vertical drop via rack-and-pinion (uses pinion pitch circumference in
   the steps_per_mm calculation, unlike the belt-driven X/Y axes).
+- **Z scale**: bench calibration commanded 100 units and measured 20 mm, replacing
+  the theoretical 50.930 value with `254.650 steps/mm`.
 - **Microstepping: 1/16 on all four drivers** (S1 OFF, S2 OFF, S3 ON) = 3200 pulse/rev
   -> 80 steps/mm on the GT2/20T belt axes. Must match the physical DIPs.
-- **Board geometry**: confirmed 60mm squares with a 20mm outer border.
-- **Graveyard is a 4x8 grid** (X500-686, Y40-425), not a single point — 32 slots for
-  the 30 capturable pieces. Queen reserve has one row per colour. These old
-  storage coordinates DO NOT FIT the measured X540/Y550 envelope (reserve
-  also reaches Y590). Re-measure the storage layout; do not bypass the checks.
+- **Board geometry**: confirmed 58mm squares with a 20mm outer border.
+- **Off-board storage**: 16 capture positions form an L at Y485 and X485;
+  promotion reserves are White X403 Y540 and Black X530 Y540.
 
 ### Still open — flag if a software choice depends on one
 
@@ -266,15 +272,12 @@ system.
   controller's initial Z0 is physically correct. After boot at the top, select
   `G21`, `G54`, then `G10 L20 P1 X0 Y0 Z0` while centred over a1 when migrating
   old work offsets.
-- **Z pinion module + tooth count** — needed for Z `steps_per_mm`. The YAML currently
-  assumes module 1.0 / 20 teeth (50.930 steps/mm). A wrong value here makes every
-  grip miss the piece or drive the claw into the board.
 - **`BOARD_ORIGIN_X/Y`** in `motion/config.py` identifies a1's centre, calibrated
   to X0 Y0. Verify alignment and the measured `Z_BOARD` on the built machine.
 - **NEMA 23 current rating**: 2.8A or 4.2A? Decides whether the TB6600 DIP ceiling is
   2.8A or 3.5A (the driver caps at 3.5A continuous either way).
-- **Claw jaw axis**: the graveyard grid's 62mm X spacing assumes the jaws open along
-  X. If they open along Y, swap `GRAVEYARD_DX`/`GRAVEYARD_DY`.
+- **Claw clearance**: the L-shaped capture area's positions are at least 62 mm
+  apart, just wider than the claw's 60 mm open outer width.
 - **Kinematics**: plain Cartesian dual-rail vs. CoreXY/H-bot. A cross-shaft link
   between the two base X-rails (to prevent gantry racking) is planned regardless of
   which is chosen.
