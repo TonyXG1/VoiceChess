@@ -1,8 +1,8 @@
 """Tests for Role 3's MotionPlanner and the orchestrator's move classification.
 
-Coordinate expectations follow motion/config.py: squares are 57.0 x 57.375 mm
-(derived from the board's measured 456 x 459 mm spans), and a square's
-coordinate is its CENTER, so a1 = (28.5, 28.69).
+Coordinate expectations follow motion/config.py: squares are 60 x 60 mm
+(480 x 480 mm playing area, plus a 20 mm border on each side), and a square's
+coordinate is its CENTER, with a1's centre as the work origin (0, 0).
 
 Several tests here are regression guards for bugs that would only have shown up
 with the motors live -- the millisecond/second dwell mix-up in particular.
@@ -33,16 +33,23 @@ def _codes(gcode):
 # ------------------------------ coordinates ------------------------------- #
 
 def test_square_to_coords(planner):
-    assert planner.square_to_coords("a1") == (28.5, 28.69)
-    assert planner.square_to_coords("h8") == (427.5, 430.31)
-    assert planner.square_to_coords("e2") == (256.5, 86.06)
+    assert planner.square_to_coords("a1") == (0.0, 0.0)
+    assert planner.square_to_coords("h8") == (420.0, 420.0)
+    assert planner.square_to_coords("e2") == (240.0, 60.0)
+    assert planner.square_to_coords("b1") == (60.0, 0.0)
+    assert planner.square_to_coords("a2") == (0.0, 60.0)
 
 def test_squares_span_the_measured_board(planner):
-    # a-h spans 456 mm and 1-8 spans 459 mm; centers sit half a square inside.
+    # Eight 60 mm squares; the first and last centres are seven squares apart.
     a1x, a1y = planner.square_to_coords("a1")
     h8x, h8y = planner.square_to_coords("h8")
-    assert h8x - a1x == pytest.approx(456.0 - cfg.SQUARE_X, abs=0.01)
-    assert h8y - a1y == pytest.approx(459.0 - cfg.SQUARE_Y, abs=0.01)
+    assert h8x - a1x == 420.0
+    assert h8y - a1y == 420.0
+
+def test_board_border_is_outside_square_coordinates(planner):
+    assert cfg.BOARD_OUTER_MIN_X == cfg.BOARD_OUTER_MIN_Y == -50.0
+    assert cfg.BOARD_OUTER_MAX_X == cfg.BOARD_OUTER_MAX_Y == 470.0
+    assert planner.square_to_coords("a1") == (0.0, 0.0)
 
 def test_out_of_bounds_square_is_blocked(planner):
     with pytest.raises(ValueError):
@@ -50,17 +57,25 @@ def test_out_of_bounds_square_is_blocked(planner):
     with pytest.raises(ValueError):
         planner.plan("e9e4")  # bad origin square must never reach the motors
 
+@pytest.mark.parametrize("x,y", [(540.01, 0), (0, 550.01), (-0.01, 0), (0, -0.01)])
+def test_positions_beyond_measured_travel_are_blocked(planner, x, y):
+    with pytest.raises(ValueError, match="outside the machine envelope"):
+        planner._checked(x, y, "travel limit test")
+
+def test_measured_travel_boundary_is_reachable(planner):
+    assert planner._checked(540.0, 550.0, "travel limit test") == (540.0, 550.0)
+
 
 # ------------------------------- scenarios -------------------------------- #
 
 def test_standard_move(planner):
     gcode = planner.plan("e2e4")
     assert isinstance(gcode, str)
-    assert "G0 X256.50 Y86.06" in gcode         # above e2
-    assert "G1 X256.50 Y200.81 F1200" in gcode  # carry to e4
+    assert "G0 X240.00 Y60.00" in gcode         # above e2
+    assert "G1 X240.00 Y180.00 F1200" in gcode  # carry to e4
     assert f"G0 A{cfg.CLAW_CLOSED_A:.2f}" in gcode
     assert f"G0 A{cfg.CLAW_OPEN_A:.2f}" in gcode
-    assert "G0 X0.00 Y0.00" in gcode            # parks out of the way
+    assert "G0 X0.00 Y0.00" in gcode            # parks above a1
 
 def test_capture_removes_target_to_graveyard_first(planner):
     gcode = planner.plan("d4e5", is_capture=True)
@@ -70,10 +85,10 @@ def test_capture_removes_target_to_graveyard_first(planner):
 
 def test_castling_moves_king_then_rook(planner):
     gcode = planner.plan("e1g1", move_type="castling")
-    king = gcode.index("X256.50 Y28.69")        # king from e1
-    rook = gcode.index("X427.50 Y28.69")        # rook from h1
+    king = gcode.index("X240.00 Y0.00")        # king from e1
+    rook = gcode.index("X420.00 Y0.00")        # rook from h1
     assert king < rook
-    assert "X313.50 Y28.69" in gcode            # rook to f1
+    assert "X300.00 Y0.00" in gcode            # rook to f1
 
 def test_en_passant_clears_the_passed_pawn(planner):
     gcode = planner.plan("d5e6", move_type="en_passant", is_capture=True)
@@ -120,6 +135,29 @@ def test_startup_sets_units_and_opens_the_claw(planner):
     codes = _codes(planner.startup())
     assert "G21" in codes and "G90" in codes and "G94" in codes
     assert f"G0 A{cfg.CLAW_OPEN_A:.2f}" in codes
+
+def test_startup_at_physical_top_never_commands_upward_travel(planner):
+    codes = _codes(planner.startup())
+    assert codes.index("G54") < codes.index("G0 Z0.00")
+    z_targets = [float(m.group(1)) for code in codes
+                 if (m := re.search(r"Z(-?\d+\.?\d*)", code))]
+    assert z_targets == [0.0]
+    _, _, problems = simulate(planner.startup(), verbose=False)
+    assert not problems
+
+def test_top_zero_preserves_measured_board_clearance_and_pickup(planner):
+    # Physical measurements, independent of the configured coordinate origin.
+    assert cfg.Z_TOP == 0.0
+    assert cfg.Z_TOP - cfg.Z_BOARD == 115.0
+    assert cfg.Z_TOP - cfg.Z_BOTTOM == 170.0
+    codes = _codes(planner.plan("e2e4"))
+    assert "G0 Z-97.00" in codes   # 18 mm above the board
+    assert "G0 Z-82.00" in codes   # lift the piece 15 mm
+
+@pytest.mark.parametrize("target", [1.0, -116.0])
+def test_preview_rejects_travel_above_top_or_below_board(target):
+    _, _, problems = simulate(f"G0 Z{target}", verbose=False)
+    assert problems
 
 
 # ----------------------------- lift policy --------------------------------- #

@@ -76,6 +76,22 @@ What matters:
 
 ## 4. Daily commands — the ones you actually need
 
+### Power-on order
+
+1. Keep the main system PSU off, including the motor drivers and servo buck
+   converter. Connect all wiring and common grounds before applying power.
+   Place the gripper directly above the CENTRE of a1, with Z fully up:
+   this is X0 Y0 Z0, with the gripper 115 mm above the board. Keep it there
+   through ESP32 boot/reset and serial connection.
+2. **Power the ESP32 first via USB** and wait for FluidNC to finish booting.
+3. **Then power the rest of the system**: the main PSU, motor drivers, and
+   servo supply (buck converter set to 4.9 V).
+
+The servo can move to its commanded position as soon as it receives power.
+This order does not prevent a jam if that position exceeds the gripper's
+mechanical travel; keep the linkage detached until its usable range is calibrated.
+Do not also feed the USB-powered ESP32 from the buck converter.
+
 ### Open a terminal to the ESP32
 
 ```bash
@@ -124,6 +140,7 @@ $Bye                    reboot
 $C                      toggle check mode (parse G-code, move nothing)
 $H                      run homing cycle
 $J=G91 X10 F500         jog 10mm relative — cancellable, safe
+$Macros/Run=0           run the configured movement-test macro
 ```
 
 Realtime bytes — sent as raw characters, no Enter, no `ok` reply:
@@ -422,19 +439,71 @@ wired yet, so all three are `cycle: 0` and `limit_*_pin: NO_PIN`. `$H` has
 nothing to home and will error — **`--no-home` is mandatory**, not merely
 recommended.
 
-Without a datum the controller has no idea where square a1 is, nor how high
-the claw sits, after any power cycle.
+Without a datum the controller has no idea where square a1 is, nor whether the
+claw was placed at its intended fully-up Z0, after any power cycle.
 
 **Z is configured switchless on purpose** so the axis can be bench-tested
 before its switch goes in. Two consequences that bite:
 
-- **Park the Z carriage at the top of its travel before powering on.** Z0 is
-  wherever it happens to sit, so `G0 Z-132` descends 132 mm from *there*, not
-  from the top.
+- **Park the Z carriage at the top before powering on or resetting.** That
+  position is Z0; negative Z lowers the claw. Without this
+  physical initialization, every absolute Z target is offset.
 - `soft_limits` is `false` on Z because soft limits are measured against a
   homed datum. Nothing on the controller stops the claw being driven into the
   table — the only guards are the Pi-side envelope check in
   `tools/gcode_preview.py` and the planner never emitting below `Z_GRIP`.
+
+The requested clearance at the top is **115 mm (11.5 cm) above the
+playing surface**. Physically set and verify this clearance at Z0; editing
+the config does not raise the mechanism. The full
+mechanical axis travel remains 170 mm; these are different measurements:
+
+| Position | Z coordinate |
+|---|---|
+| Fully raised / startup / empty travel | 0 mm |
+| Low carry | -82 mm |
+| Pickup (18 mm grip offset still to be measured) | -97 mm |
+| Board surface | -115 mm |
+| Mechanical bottom (not a board-move target) | -170 mm |
+
+**Automatic play is blocked by the motion config's existing envelope check.**
+At this height, gripping 18 mm above the board leaves 97 mm of upward travel.
+Clearing the 95 mm king plus the 7 mm margin requires 102 mm of lift, targeting
+Z+5, above the physical top. The current geometry needs 120 mm of top clearance.
+Resolve the physical clearance/grip geometry and re-measure before automated
+play; do not bypass the check. Manual FluidNC bench tests remain available.
+
+**Migrating from the old bottom-zero coordinates:** upload the updated
+`fluidnc/config.yaml` and use the matching `motion/config.py` on the Pi.
+With Z physically at the top, boot the ESP32 and send:
+
+```gcode
+G21
+G54
+G10 L20 P1 X0 Y0 Z0
+```
+
+Run these commands only while fully raised directly above the CENTRE of a1.
+They assign work X0 Y0 Z0 to that starting position without moving any axis.
+Verify work X/Y/Z all read 0 before moving. The board's outer corner is half
+a square behind this origin; do not zero there. Square centres are now a1 =
+(0, 0), b1 = (60, 0), a2 = (0, 60), and h8 = (420, 420) mm.
+Squares are 60 mm on both axes. The playing area is 480 x 480 mm, with a
+20 mm border on all four sides: 520 x 520 mm overall. Relative to a1's
+centre, the playing edges run from -30 to 450 mm and the outer edges from
+-50 to 470 mm on each axis. The border does not shift the square centres.
+Measured usable travel from this origin is **X0 to X540 mm (54 cm)** and
+**Y0 to Y550 mm (55 cm)**. All 64 square centres fit. These limits are recorded
+in both the Pi motion config and FluidNC YAML; controller soft limits remain
+disabled, so manual jogs are not automatically stopped at these boundaries.
+The old off-board storage layout does not fit: the graveyard and queen reserve
+extend to X686, and the black queen row is Y590. Re-measure those storage
+positions before automatic captures or promotions; the config checks reject
+them once the separate Z-clearance blocker is resolved.
+Use G54 for the game. Opening the Python serial port can reset the ESP32,
+so Z must be at the top before launching the app too. After a reset elsewhere,
+restore the physical top position and its work Z0 before resuming.
+Do not reuse old positive-Z move commands with this frame.
 
 Wire the switches, then in `config.yaml`:
 
@@ -488,14 +557,26 @@ the claw into the board. Measure before the claw goes near a real piece.
 
 ### E. Direction and ganging checks
 
-- Jog each axis 10 mm and confirm it moves the expected direction. If
-  reversed, append `:low` to the `direction_pin` in the config — do **not**
+- Jog each axis a small distance and confirm it moves the expected direction. If
+  reversed, toggle `:low` on the `direction_pin` in the config — do **not**
   swap motor wires.
-- **X has two ganged NEMA 23s.** Confirm both turn the *same* way before
-  bolting the gantry on. If they counter-rotate, add `:low` to motor1's
-  `direction_pin` (gpio.18).
+- **X has two ganged NEMA 23s.** Both direction outputs are now inverted:
+  `gpio.14:low` and `gpio.18:low`. This reverses +X/-X relative to the previous
+  wiring configuration while preserving the relationship between the rails.
+  After uploading and rebooting, check `$J=G91 G21 X1 F100` with room to move,
+  then `$J=G91 G21 X-1 F100` to return. Confirm both rails move together and
+  recalibrate the board's X origin. The planner still maps increasing X from
+  the a-file toward the h-file.
 
 ### F. Claw axis
+
+Measured internal claw depth is 30 mm. This alone does not establish the
+pickup Z or the servo's working open/closed positions. The motion config's
+18 mm grip offset and A0/A45 settings still need a physical pickup check.
+With a piece resting on the board, record the Z coordinate where it grips
+reliably: the lowest-point height is that Z coordinate plus 115 mm. To clear
+the 95 mm king with the existing 7 mm margin, that height must be no more
+than 13 mm (115 - 95 - 7), or the available top clearance must increase.
 
 The claw is an **SG90 9g micro-servo**, not a stepper and not on a TB6600.
 It takes a single signal wire on **gpio.19**. There is no fourth driver
@@ -539,8 +620,11 @@ exist.
 Each step isolates one thing. Do not skip ahead.
 
 1. Set all DIP switches (current + microstepping) — **before power**.
-2. Power on, `$X`, `?` — confirm `<Idle|MPos:0.000,0.000,0.000,0.000|...>`
-   with four numbers.
+2. Power the ESP32 first via USB, leaving the main system PSU off. Wait for
+   FluidNC to boot, then `$X`, `?` — confirm
+   `<Idle|MPos:0.000,0.000,0.000,0.000|...>` with four numbers. For the powered
+   hardware tests below, switch on the rest of the system only after the ESP32
+   has booted, following the power-on order in section 4.
 3. `python tools/gcode_preview.py --all` — every scenario planned and
    envelope-checked on the Pi, nothing moves.
 4. Motors **disconnected**: stream a job, poll `?`, watch `MPos` walk to the
@@ -552,7 +636,7 @@ Each step isolates one thing. Do not skip ahead.
    ganged motors agree.
 7. `$J=G91 X100 F500`, measure, correct `steps_per_mm`.
 8. Repeat 6–7 for Y, then Z. **Z with the carriage parked at the top and in
-   small steps** (`$J=G91 Z-10 F500`) — there is no switch and no soft limit
+   small downward steps** (`$J=G91 G21 Z-10 F500`) — there is no switch or soft limit
    to catch an overrun. Measure before trusting `steps_per_mm: 50.930`.
 9. Wire the Z limit switch, then X/Y limit switches; update config, test `$H`.
 10. Set work zero over a1, run a full move with a real piece on the board.

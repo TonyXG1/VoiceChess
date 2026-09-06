@@ -154,12 +154,21 @@ real bugs here; don't reintroduce them:
   (`must_home: false`, all cycles `0`), so it boots ready and `$H` has nothing to
   home — `--no-home` is mandatory until switches are wired.
 
-Geometry (all in `motion/config.py`): squares are **57.0 x 57.375 mm**, derived from
-the board's measured 456 x 459 mm spans rather than the nominal 58 mm — the nominal
-value drifts ~8mm by the h-file. A square's coordinate is its CENTER, so
-`a1 = (28.50, 28.69)` and `h8 = (427.50, 430.31)`. Z homes to the top, so the work
-envelope is **negative**: `Z_TOP = 0`, board surface at `Z_BOARD = -150`, grip at
-`-132`, low carry `-117`, safe/high carry `-22`.
+Geometry (all in `motion/config.py`): confirmed squares are **60 x 60 mm**,
+with a 480 x 480 mm playing area and a 20 mm border on all four sides
+(520 x 520 mm overall). A square's coordinate is its CENTER, so
+`a1 = (0, 0)` is the work origin at a1's CENTRE; `h8 = (420, 420)`.
+There is no half-square offset in the planner. Start centred over a1.
+Z starts fully up at `Z0`
+and increases upward: `Z_TOP = 0`, board surface at `Z_BOARD = -115`, grip at
+`-97`, low carry `-82`, empty safe travel `0`. Requested top clearance is
+115 mm (11.5 cm) to the playing surface; physically set and verify it at Z0.
+Full mechanical
+travel remains 170 mm (bottom Z-170). Automatic play is blocked at config
+import: the 18 mm grip offset plus 102 mm high lift needs 120 mm clearance,
+so the required high-carry target is unreachable Z+5. Do not bypass the check.
+Both X direction pins are inverted (`gpio.14:low`, `gpio.18:low`); logical
+board coordinates still increase from the a-file toward the h-file.
 
 **Lift policy** — the claw must never drag a piece across the board:
 
@@ -212,8 +221,12 @@ Motor count is 3x NEMA 23 + 1x NEMA 17 (X ×2, Y, Z) — that is all four TB6600
 there is no driver spare for a stepper claw. The claw is an **SG90 9g micro-servo**
 on a single signal wire; it needs no driver. `gpio.23` is free.
 
-**Dimensions**: board 456mm (a-h) x 459mm (1-8), 57mm squares. Travel 720mm on X and
-Y, 170mm on Z. Claw opening 60mm outside / 45mm inside. Piece heights: king 95, queen
+**Dimensions**: playing area 480 x 480mm, 60mm squares, 20mm border on all
+four sides (520 x 520mm overall; outer edges -50..470 from a1's centre).
+Usable travel from
+a1's centre is X0..540mm and Y0..550mm; full Z travel is 170mm.
+Claw opening 60mm outside / 45mm inside; confirmed internal depth 30mm
+(does not establish pickup height or servo endpoints). Piece heights: king 95, queen
 75, bishop 65, knight 58, rook 46, pawn 45 — the 95mm king sets `LIFT_HIGH`, and the
 45mm claw opening is what the piece bases must fit inside.
 
@@ -232,9 +245,11 @@ system.
   the steps_per_mm calculation, unlike the belt-driven X/Y axes).
 - **Microstepping: 1/16 on all four drivers** (S1 OFF, S2 OFF, S3 ON) = 3200 pulse/rev
   -> 80 steps/mm on the GT2/20T belt axes. Must match the physical DIPs.
-- **Board geometry**: 57.0 x 57.375mm squares from the measured spans, not 58mm.
+- **Board geometry**: confirmed 60mm squares with a 20mm outer border.
 - **Graveyard is a 4x8 grid** (X500-686, Y40-425), not a single point — 32 slots for
-  the 30 capturable pieces. Queen reserve has one row per colour.
+  the 30 capturable pieces. Queen reserve has one row per colour. These old
+  storage coordinates DO NOT FIT the measured X540/Y550 envelope (reserve
+  also reaches Y590). Re-measure the storage layout; do not bypass the checks.
 
 ### Still open — flag if a software choice depends on one
 
@@ -242,16 +257,20 @@ system.
   (gpio.17) is not wired yet, so all three are `cycle: 0` / `NO_PIN` and `$H` has
   nothing to home. After any power cycle the machine knows neither where a1 is nor
   how high the claw sits. **This is the largest risk to a working demo.** Stopgap
-  documented in `fluidnc/config.yaml`: jog to a1, then `G10 L20 P1 X0 Y0` (preferred
+  documented in `fluidnc/config.yaml`: select G54, jog to a1's centre, then
+  `G10 L20 P1 X0 Y0` (preferred
   over `G92`, which is an offset that survives in surprising ways).
   Z is switchless **on purpose** for bench testing, which means `soft_limits: false`
-  and no controller-side backstop — park the Z carriage at the top of its travel
-  before powering on, or every descent starts from the wrong place.
+  and no controller-side backstop — park the Z carriage at the top of its
+  travel before power-on/reset or opening the Python serial port so the
+  controller's initial Z0 is physically correct. After boot at the top, select
+  `G21`, `G54`, then `G10 L20 P1 X0 Y0 Z0` while centred over a1 when migrating
+  old work offsets.
 - **Z pinion module + tooth count** — needed for Z `steps_per_mm`. The YAML currently
   assumes module 1.0 / 20 teeth (50.930 steps/mm). A wrong value here makes every
   grip miss the piece or drive the claw into the board.
-- **`BOARD_ORIGIN_X/Y` and `Z_BOARD`** in `motion/config.py` are placeholders until
-  measured on the built machine. Everything else derives from them.
+- **`BOARD_ORIGIN_X/Y`** in `motion/config.py` identifies a1's centre, calibrated
+  to X0 Y0. Verify alignment and the measured `Z_BOARD` on the built machine.
 - **NEMA 23 current rating**: 2.8A or 4.2A? Decides whether the TB6600 DIP ceiling is
   2.8A or 3.5A (the driver caps at 3.5A continuous either way).
 - **Claw jaw axis**: the graveyard grid's 62mm X spacing assumes the jaws open along

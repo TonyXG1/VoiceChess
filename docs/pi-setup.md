@@ -114,6 +114,28 @@ follow the dialogue over SSH even when you can't hear the speaker.
 
 ## 6. ESP32 / G-code output over USB
 
+**Startup order: power the ESP32 first via USB, wait for FluidNC to finish
+booting, then power the rest of the system (main PSU, motor drivers, and the
+servo's 4.9 V buck supply).** Connect common grounds before power-on; do not
+also power the USB-connected ESP32 from the buck. The servo may move when its
+supply turns on, so its startup position must be within the gripper's usable
+travel. For initial setup, keep the main PSU off through the checks below.
+Place Z fully up before boot/reset or opening the Python serial connection.
+The top is now Z0, with a requested 115 mm clearance above the playing surface.
+Physically set and verify that height; changing the config does not move Z.
+Start directly above the CENTRE of a1: this is work X0 Y0, not the outside
+corner. After boot at that position, use `G21`, `G54`, then
+`G10 L20 P1 X0 Y0 Z0` to set the work origin without moving.
+Usable travel from that origin is X0..540 mm and Y0..550 mm, matching
+`motion/config.py` and `fluidnc/config.yaml`. All board square centres fit,
+but the old capture/promotion storage positions require recalibration:
+they extend to X686 and Y590. Soft limits are still disabled on the ESP32.
+Confirmed board dimensions: 60 mm squares, 480 x 480 mm playing area, and
+a 20 mm border on every side (520 x 520 mm overall). With a1 centred at
+X0 Y0, h8 is X420 Y420 and the outer board edges are -50..470 mm.
+The claw's internal depth is 30 mm; actual pickup Z and working servo A
+positions still need measurement. Internal depth is not the grip offset.
+
 > **Do all of this with the 24V PSU OFF.** The ESP32 runs off USB alone, and with
 > no 24V the TB6600s cannot turn a motor no matter what G-code arrives. FluidNC
 > still tracks position internally, so every step below is fully verifiable with
@@ -266,14 +288,24 @@ something:
   board. Measure the real pinion first.
 - **TB6600 current DIPs** must be set at or below each motor's rated current per
   phase. Above it is the only setting that can physically cook a motor.
-- **`BOARD_ORIGIN_X/Y` and `Z_BOARD` in `motion/config.py`** are unmeasured, so
-  square coordinates are not yet real.
+- **`BOARD_ORIGIN_X/Y` in `motion/config.py`** is the centre of a1, set to work
+  X0 Y0 at startup. Verify the physical alignment and the measured `Z_BOARD`.
 
 Also note that **no axis is homed**: X and Y have no limit switches, and Z's is not
 wired, so `$H` has nothing to home and cannot establish an origin — see the
 `G10 L20` stopgap documented at the bottom of `fluidnc/config.yaml`. Because Z has
-no switch and no soft limits either, park the Z carriage at the top of its travel
-before powering on.
+no switch and no soft limits either, park the Z carriage at the top of its
+travel before powering on/resetting or opening the Python serial connection;
+that physical position is the controller's initial Z0. The board is Z-115,
+pickup is Z-97, and low carry is Z-82. The mechanical travel is still 170 mm.
+Automatic play currently fails the motion config's envelope check: top
+clearance is 115 mm, but the configured grip height and high lift need 120 mm.
+Resolve that physical discrepancy before running the game; do not bypass it.
+When migrating from the old coordinates, upload the updated FluidNC config
+and update the Pi's motion config together. After boot, with Z still at the
+top and the gripper centred over a1, send `G21`, `G54`, and
+`G10 L20 P1 X0 Y0 Z0` to set the new work origin without moving any axis.
+See the coordinate setup in `fluidnc/ESP32_README.md`.
 
 ## 7. Later (not needed yet)
 

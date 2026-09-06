@@ -68,9 +68,9 @@ class MotionPlanner:
         col_idx = _FILES.index(col_char)
         row_idx = _RANKS.index(row_char)
 
-        # +0.5 puts the claw on the square's CENTER, not its corner.
-        x = cfg.BOARD_ORIGIN_X + (col_idx + 0.5) * cfg.SQUARE_X
-        y = cfg.BOARD_ORIGIN_Y + (row_idx + 0.5) * cfg.SQUARE_Y
+        # The origin is already the centre of a1; no half-square offset.
+        x = cfg.BOARD_ORIGIN_X + col_idx * cfg.SQUARE_X
+        y = cfg.BOARD_ORIGIN_Y + row_idx * cfg.SQUARE_Y
         return self._checked(round(x, 2), round(y, 2), square)
 
     def _checked(self, x: float, y: float, what: str) -> Tuple[float, float]:
@@ -121,8 +121,9 @@ class MotionPlanner:
             "G21 ; millimetres",
             "G90 ; absolute positioning",
             "G94 ; feed rate is mm/min",
+            "G54 ; calibrated board work coordinates",
             f"G0 A{_f(cfg.CLAW_OPEN_A)} ; open claw",
-            f"G0 Z{_f(cfg.Z_TOP)} ; retract Z",
+            f"G0 Z{_f(cfg.Z_TOP)} ; top Z0 (already here at power-on)",
         ])
 
     def _transfer(self, start: Tuple[float, float], end: Tuple[float, float],

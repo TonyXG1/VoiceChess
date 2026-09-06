@@ -30,7 +30,7 @@ _WORD = re.compile(r"([XYZAFP])(-?\d+\.?\d*)")
 # Rapids take their speed from the FluidNC YAML, not from the G-code, so the
 # timing estimate needs those numbers here. Keep in sync with fluidnc/config.yaml.
 MAX_RATE_XY = 8000.0   # mm/min
-MAX_RATE_Z = 2500.0    # mm/min
+MAX_RATE_Z = 4000.0    # mm/min
 
 
 class Violation(Exception):
@@ -46,7 +46,7 @@ def _check_point(x: float, y: float, z: float, a: float, line_no: int,
     if not (0.0 <= y <= cfg.Y_MAX):
         problems.append(f"Y{y:.2f} outside 0..{cfg.Y_MAX}")
     if z > cfg.Z_TOP:
-        problems.append(f"Z{z:.2f} above the homed top ({cfg.Z_TOP})")
+        problems.append(f"Z{z:.2f} above the top of travel ({cfg.Z_TOP})")
     if z < cfg.Z_BOARD:
         problems.append(f"Z{z:.2f} BELOW the board surface ({cfg.Z_BOARD}) "
                         f"- this drives the claw into the board")
