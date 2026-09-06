@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Loaded gameplay carries now use `F3000` (3,000 mm/min, or 50 mm/s), raised
+  from `F1200`. Empty positioning and Z rapids remain capped at 4,000 mm/min.
 - The narrator now says `Your turn` at the start of the game and immediately
   after every completed AI move, before listening for White's next move.
 - Serial acknowledgement handling now gives FluidNC `G4` dwell commands the

@@ -142,7 +142,7 @@ CLAW_DWELL_S = 0.5
 
 # Only G1 carries a feed word: G0 rapids take their speed from the YAML's
 # max_rate_mm_per_min, and an F on a G0 line just mutates the modal feed.
-F_CARRY = 1200.0       # loaded -- a piece is standing in the claw
+F_CARRY = 3000.0       # loaded -- a piece is standing in the claw
 F_EMPTY = 3000.0       # unloaded G1 moves (currently unused; rapids handle these)
 
 

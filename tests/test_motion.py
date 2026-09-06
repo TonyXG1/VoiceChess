@@ -78,7 +78,7 @@ def test_standard_move(planner):
     gcode = planner.plan("e2e4", moving_piece="pawn")
     assert isinstance(gcode, str)
     assert "G0 X58.00 Y232.00" in gcode         # above e2
-    assert "G1 X174.00 Y232.00 F1200" in gcode  # carry to e4
+    assert "G1 X174.00 Y232.00 F3000" in gcode  # carry to e4
     assert "G0 Z85.00" in gcode
     assert "G0 A62.00" in gcode
     assert f"G0 A{cfg.CLAW_OPEN_A:.2f}" in gcode
