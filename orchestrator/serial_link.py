@@ -59,7 +59,7 @@ _ERROR_HINTS = {
 
 class SerialLink:
     def __init__(self, port: Optional[str] = None, baud: int = 115200,
-                 ack_timeout: float = 2.0, idle_timeout: float = 180.0,
+                 ack_timeout: float = 10.0, idle_timeout: float = 180.0,
                  home_timeout: float = 90.0, strict: Optional[bool] = None) -> None:
         self.port = port
         self.baud = baud
@@ -88,7 +88,10 @@ class SerialLink:
             )
         # Opening the port toggles DTR/RTS, which resets most ESP32 dev boards;
         # give FluidNC a moment to boot, then swallow its startup banner.
-        self._ser = serial.Serial(port, baud, timeout=ack_timeout)
+        # Keep each readline short; _read_reply() owns the overall command
+        # deadline. Otherwise a long acknowledgement allowance would also make
+        # banner draining and each realtime-status poll block for ten seconds.
+        self._ser = serial.Serial(port, baud, timeout=min(ack_timeout, 0.25))
         time.sleep(2.0)
         self._drain_banner()
         self._report_initial_state()
@@ -223,16 +226,31 @@ class SerialLink:
             return
         self._ser.write((payload + "\n").encode("ascii", errors="replace"))
         self._ser.flush()
-        reply = self._read_reply()
+        reply_timeout = self._command_ack_timeout(payload)
+        reply = self._read_reply(timeout=reply_timeout)
         print(f"[SERIAL] > {payload}")
         print(f"[SERIAL] < {reply if reply else '(no reply within timeout)'}")
         if reply is None:
             self._fail(
-                f"No ok/error ack for {payload!r} within {self.ack_timeout}s. "
+                f"No ok/error ack for {payload!r} within {reply_timeout}s. "
                 "The controller may be wedged or the baud rate may be wrong."
             )
         else:
             self._check_error(reply, payload)
+
+    def _command_ack_timeout(self, payload: str) -> float:
+        """Allow synchronizing commands to finish queued physical motion.
+
+        FluidNC acknowledges ordinary streamed lines quickly, but G4 drains
+        the preceding motion queue and performs the dwell before returning
+        ``ok``. A fixed two-second acknowledgement timeout therefore failed at
+        the first servo dwell even though the controller and mechanics were
+        working normally.
+        """
+        command = payload.upper().split(maxsplit=1)[0]
+        if command in {"G4", "G04"}:
+            return self.idle_timeout
+        return self.ack_timeout
 
     def _read_reply(self, timeout: Optional[float] = None) -> Optional[str]:
         """Read lines until an ok/error ack or the timeout elapses.

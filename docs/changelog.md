@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Serial acknowledgement handling now gives FluidNC `G4` dwell commands the
+  full motion timeout. FluidNC completes queued moves before acknowledging a
+  dwell, so the previous two-second timeout falsely aborted the first pickup
+  at `G4 P0.5`. Ordinary command acknowledgements now allow ten seconds to
+  tolerate planner-buffer flow control.
 - Z coordinates now match the built machine: Z0 is fully raised and positive Z
   moves the gripper downward. The board is therefore Z115 and the mechanical
   bottom is Z170 after calibration.

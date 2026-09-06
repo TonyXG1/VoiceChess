@@ -91,6 +91,31 @@ def test_missing_ack_is_an_error_when_strict():
     with pytest.raises(SerialError):
         link.send(["G0 X1.00"])
 
+def test_dwell_uses_motion_timeout_for_delayed_ack(monkeypatch):
+    """G4 waits for queued motion before FluidNC sends its acknowledgement."""
+    link = _link([])
+    observed = []
+
+    def reply(timeout=None):
+        observed.append(timeout)
+        return "ok"
+
+    monkeypatch.setattr(link, "_read_reply", reply)
+    link._send_line("G4 P0.5")
+    assert observed == [link.idle_timeout]
+
+def test_normal_command_keeps_short_ack_timeout(monkeypatch):
+    link = _link([])
+    observed = []
+
+    def reply(timeout=None):
+        observed.append(timeout)
+        return "ok"
+
+    monkeypatch.setattr(link, "_read_reply", reply)
+    link._send_line("G0 Z85")
+    assert observed == [link.ack_timeout]
+
 def test_tolerant_mode_keeps_streaming_through_errors(capsys):
     """serial_test.py relies on this: prove bytes flow before FluidNC exists."""
     link = _link([], strict=False)
