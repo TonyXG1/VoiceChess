@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whenever the direct path is clear. Safe detour waypoints remain in use only
   when the segment would enter a square occupied by a king or queen.
 - Loaded gameplay carries now use `F2000` (2,000 mm/min, or 33.3 mm/s), raised
-  from the original `F1200`. The X component is capped at 1,000 mm/min;
+  from the original `F1200`. The X component is capped at 2,000 mm/min;
   unloaded Y positioning and Z rapids remain capped at 4,000 mm/min.
 - The narrator now says `Your turn` at the start of the game and immediately
   after every completed AI move, before listening for White's next move.
