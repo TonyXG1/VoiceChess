@@ -12,7 +12,7 @@ import re
 
 import pytest
 
-from chess_ai import ChessEngine
+from chess_ai import ChessEngine, MockVoice
 from motion import MotionPlanner
 from motion import config as cfg
 from orchestrator import Orchestrator, SerialLink
@@ -392,3 +392,29 @@ def test_motion_context_reports_captured_piece_before_apply():
     assert moving == "bishop"
     assert captured == "rook"
     assert set(protected) == {"e1", "e8"}
+
+def test_orchestrator_announces_every_human_turn(monkeypatch):
+    class RecordingSpeaker:
+        def __init__(self):
+            self.messages = []
+
+        def say(self, text):
+            self.messages.append(text)
+
+    eng = ChessEngine()
+    speaker = RecordingSpeaker()
+    eng.speaker = speaker
+    monkeypatch.setattr(eng, "ai_move", lambda: "e7e5")
+    orch = Orchestrator(
+        engine=eng,
+        voice=MockVoice(script=["e2e4"]),
+        planner=MotionPlanner(),
+        serial=SerialLink(),
+    )
+
+    orch.run(max_turns=1)
+
+    assert speaker.messages[:2] == ["New game. You are White.", "Your turn."]
+    ai_announcement = speaker.messages.index("A I plays Pawn to e5")
+    assert speaker.messages[ai_announcement + 1] == "Your turn."
+    assert speaker.messages.count("Your turn.") == 2

@@ -125,7 +125,8 @@ class Orchestrator:
         # put the machine into a known G-code state (mm, absolute, claw open).
         self.planner.reset()
         self.serial.send(self.planner.startup().splitlines())
-        eng.speak("New game. You are White. Your move.")
+        eng.speak("New game. You are White.")
+        eng.speak("Your turn.")
 
         turn = 0
         while turn < max_turns:
@@ -206,6 +207,8 @@ class Orchestrator:
 
             if ai_res.status.is_game_over:
                 break
+
+            eng.speak("Your turn.")
 
         # ----------------------------- announce ----------------------------- #
         st = eng.status()

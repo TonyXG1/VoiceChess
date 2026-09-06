@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The narrator now says `Your turn` at the start of the game and immediately
+  after every completed AI move, before listening for White's next move.
 - Serial acknowledgement handling now gives FluidNC `G4` dwell commands the
   full motion timeout. FluidNC completes queued moves before acknowledging a
   dwell, so the previous two-second timeout falsely aborted the first pickup
