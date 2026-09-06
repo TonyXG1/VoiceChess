@@ -114,6 +114,33 @@ follow the dialogue over SSH even when you can't hear the speaker.
 
 ## 6. ESP32 / G-code output over USB
 
+**Startup order: power the ESP32 first via USB, wait for FluidNC to finish
+booting, then power the rest of the system (main PSU, motor drivers, and the
+servo's 4.9 V buck supply).** Connect common grounds before power-on; do not
+also power the USB-connected ESP32 from the buck. The servo may move when its
+supply turns on, so its startup position must be within the gripper's usable
+travel. For initial setup, keep the main PSU off through the checks below.
+Place Z fully up before boot/reset or opening the Python serial connection.
+The top is now Z0, with a requested 115 mm clearance above the playing surface.
+Physically set and verify that height; changing the config does not move Z.
+Start directly above the CENTRE of a1: this is work X0 Y0, not the outside
+corner. After boot at that position, use `G21`, `G54`, then
+`G10 L20 P1 X0 Y0 Z0` to set the work origin without moving.
+Usable travel from that origin is X0..535 mm and Y0..545 mm, matching
+`motion/config.py` and `fluidnc/config.yaml`. All board square centres fit. The
+temporary flat capture area has eight positions along Y485 parallel to the
+h-file and eight along X485 beyond rank 8, all spaced 62 mm apart. Each capture
+descends from high carry Z0 to Z40 and releases. Its 16 positions must be
+cleared before the planner is reset. One promotion queen per colour is reserved
+at X403 Y540 for White and X530 Y540 for Black; both use Z67/A35. Soft limits
+remain disabled.
+Confirmed board dimensions: 58 mm squares, 464 x 464 mm playing area, and
+a 20 mm border on every side (504 x 504 mm overall). With a1 centred at
+X0 Y0, h8 is X406 Y406 and the outer board edges are -49..455 mm.
+The claw's internal depth is 30 mm and A0 is open. Measured pickup profiles are
+pawn Z85/A62, knight Z75/A76, bishop Z80/A43, rook Z90/A43, queen Z67/A35,
+and king Z67/A35. Internal depth is not the pickup Z.
+
 > **Do all of this with the 24V PSU OFF.** The ESP32 runs off USB alone, and with
 > no 24V the TB6600s cannot turn a motor no matter what G-code arrives. FluidNC
 > still tracks position internally, so every step below is fully verifiable with
@@ -261,19 +288,32 @@ than streaming the rest of a move into a controller that already rejected a line
 Three values in the config are still placeholders, and two of them can damage
 something:
 
-- **Z `steps_per_mm` in `fluidnc/config.yaml`** assumes a module-1.0, 20-tooth
-  pinion. Wrong here and the claw either misses every piece or drives into the
-  board. Measure the real pinion first.
+- **Z `steps_per_mm` in `fluidnc/config.yaml`** is calibrated to `254.650` from
+  a commanded 100-unit move that physically travelled 20 mm. Verify it with a
+  measured 20 mm move after uploading the config.
 - **TB6600 current DIPs** must be set at or below each motor's rated current per
   phase. Above it is the only setting that can physically cook a motor.
-- **`BOARD_ORIGIN_X/Y` and `Z_BOARD` in `motion/config.py`** are unmeasured, so
-  square coordinates are not yet real.
+- **`BOARD_ORIGIN_X/Y` in `motion/config.py`** is the centre of a1, set to work
+  X0 Y0 at startup. From there, +X follows the a-file toward a8 and +Y follows
+  rank 1 toward h1. Verify the physical alignment and the measured `Z_BOARD`.
 
 Also note that **no axis is homed**: X and Y have no limit switches, and Z's is not
 wired, so `$H` has nothing to home and cannot establish an origin — see the
 `G10 L20` stopgap documented at the bottom of `fluidnc/config.yaml`. Because Z has
-no switch and no soft limits either, park the Z carriage at the top of its travel
-before powering on.
+no switch and no soft limits either, park the Z carriage at the top of its
+travel before powering on/resetting or opening the Python serial connection;
+that physical position is the controller's initial Z0. Positive Z moves down;
+the board is Z115, piece pickups are Z67..Z90, and each low carry is 15 mm above
+that piece's pickup. The mechanical travel is still 170 mm. High carries run at
+Z0 and route around every current king and queen square; the minimum 67 mm
+clearance passes over the tallest unprotected piece, the 65 mm bishop. Captures
+use the temporary flat area. The promotion reserves are X403 Y540 for White and
+X530 Y540 for Black; physically verify both before enabling powered play.
+When migrating from the old coordinates, upload the updated FluidNC config
+and update the Pi's motion config together. After boot, with Z still at the
+top and the gripper centred over a1, send `G21`, `G54`, and
+`G10 L20 P1 X0 Y0 Z0` to set the new work origin without moving any axis.
+See the coordinate setup in `fluidnc/ESP32_README.md`.
 
 ## 7. Later (not needed yet)
 

@@ -1,27 +1,27 @@
 """Role 3 - the machine's physical constants. THE calibration file.
 
 Every number the gantry cares about lives here, so tuning the real build never
-means editing planner logic. After the first powered run you should only ever
-need to touch the four values marked ``[MEASURE]``.
+means editing planner logic.
 
 Coordinate system (matches the frame declared in ``fluidnc/config.yaml``):
 
-    X  0 -> 715 mm   left to right   (a-file .. h-file, then the off-board zones)
-    Y  0 -> 715 mm   near to far     (rank 1 .. rank 8, then graveyard/reserve)
-    Z  0 -> -170 mm  DOWN IS NEGATIVE -- Z0 is the top of travel, "claw fully
-                     retracted", so the whole work envelope is negative.
+    X  0 -> 535 mm   from a1's centre along the a-file toward a8
+    Y  0 -> 545 mm   from a1's centre along rank 1 toward h1
+    Z  0 -> 170 mm   DOWN IS POSITIVE -- Z0 is the top of travel, "claw fully
+                     retracted", with 115 mm clearance above the board.
     A                the claw servo, in degrees (an axis, not a spindle)
 
 NOTHING IS HOMED right now: X and Y have no limit switches and Z's is not wired,
 so all four axes are ``cycle: 0`` and ``$H`` has nothing to home (``--no-home``
 is mandatory). Every coordinate below is therefore relative to wherever the
 machine happened to sit at power-on. Park the Z carriage at the TOP of its
-travel before switching on, or every descent starts from the wrong place.
+travel before switching on or resetting so power-on Z0 matches the frame below.
+The active work coordinates must also read Z0 there; clear any old Z offset
+at this position as documented in fluidnc/ESP32_README.md.
 
-Board geometry is derived from the measured spans of the real board rather than
-the nominal square size: 456 mm across a-h is 57.0 mm/square, 459 mm across 1-8
-is 57.375 mm/square. Using the nominal 58 mm instead would drift ~8 mm by the
-h-file -- a guaranteed miss given the claw's 45 mm inner opening.
+Confirmed board geometry: 58 mm squares, a 464 x 464 mm playing area, and a
+20 mm border on all four sides (504 x 504 mm overall). The centre of a1 is
+the origin; square centres span 0..406 mm and outer board edges -49..455 mm.
 """
 
 from __future__ import annotations
@@ -30,16 +30,14 @@ from __future__ import annotations
 # Machine envelope
 # --------------------------------------------------------------------------- #
 
-# Rail lengths are 720 mm; the usable envelope sits just inside so a rapid can
-# never slam the ends. Z is 170 mm of rack-and-pinion travel.
-RAIL_LENGTH = 720.0
-RAIL_MARGIN = 5.0
-
-X_MAX = RAIL_LENGTH - RAIL_MARGIN      # 715.0
-Y_MAX = RAIL_LENGTH - RAIL_MARGIN      # 715.0
+# Measured usable positive travel from the starting point (a1's centre).
+# These are coordinate limits, not total rail lengths. FluidNC soft limits
+# remain disabled until the axes can be homed.
+X_MAX = 535.0
+Y_MAX = 545.0
 Z_AXIS_LENGTH = 170.0
 
-# Where the gantry parks between moves: out of the player's line of sight.
+# Where the gantry parks between moves: above the centre of a1 at Z_SAFE.
 PARK_X = 0.0
 PARK_Y = 0.0
 
@@ -48,58 +46,73 @@ PARK_Y = 0.0
 # Board geometry
 # --------------------------------------------------------------------------- #
 
-SQUARE_X = 57.0        # 456 mm across a-h / 8
-SQUARE_Y = 57.375      # 459 mm across 1-8 / 8
+SQUARE_X = 58.0
+SQUARE_Y = 58.0
+BOARD_BORDER = 20.0   # frame outside the playing area, on each of four sides
 
-# [MEASURE] Machine coordinates of the board's a1 CORNER (not the square center).
-# Jog the claw to the outside corner of a1 after homing and read the DRO.
+# Work coordinates of the CENTRE of a1. Start directly above that centre
+# and set G54 X0 Y0 there. All other square centres are whole-square offsets.
 BOARD_ORIGIN_X = 0.0
 BOARD_ORIGIN_Y = 0.0
 
-BOARD_SPAN_X = 8 * SQUARE_X     # 456.0
-BOARD_SPAN_Y = 8 * SQUARE_Y     # 459.0
+BOARD_SPAN_X = 8 * SQUARE_X     # 464.0, playing area
+BOARD_SPAN_Y = 8 * SQUARE_Y     # 464.0, playing area
+BOARD_OUTER_MIN_X = BOARD_ORIGIN_X - 0.5 * SQUARE_X - BOARD_BORDER
+BOARD_OUTER_MIN_Y = BOARD_ORIGIN_Y - 0.5 * SQUARE_Y - BOARD_BORDER
+BOARD_OUTER_MAX_X = BOARD_OUTER_MIN_X + BOARD_SPAN_X + 2 * BOARD_BORDER
+BOARD_OUTER_MAX_Y = BOARD_OUTER_MIN_Y + BOARD_SPAN_Y + 2 * BOARD_BORDER
 
 
 # --------------------------------------------------------------------------- #
 # Z heights
 # --------------------------------------------------------------------------- #
 
-Z_TOP = 0.0            # homed position, claw fully retracted
+Z_TOP = 0.0                       # power-on position, claw fully retracted
+Z_BOTTOM = Z_TOP + Z_AXIS_LENGTH  # 170.0, full mechanical travel (below board)
 
-# [MEASURE] Z at which the claw tips touch the board surface. Jog down slowly
-# with a sheet of paper under the tips and stop when it just binds.
-Z_BOARD = -150.0
+# Requested top clearance: physically set the gripper's lowest point 115 mm
+# above the playing surface at Z0. Changing this value does not move the top.
+# Clearance is not the same as the 170 mm axis travel.
+Z_TOP_CLEARANCE = 115.0
+Z_BOARD = Z_TOP + Z_TOP_CLEARANCE  # 115.0
 
-# [MEASURE-ish] How far up the piece the claw grips. Wants to be on the base,
-# below the widest part of the body, and above any felt pad.
-GRIP_OFFSET = 18.0
-
-# Loaded carry along a path chess rules guarantee is empty. Only has to clear
-# the board surface itself.
+# Loaded carry along a path chess rules guarantee is empty. This lifts each
+# piece 15 mm from its own measured pickup depth.
 LIFT_LOW = 15.0
 
-# Measured piece heights in mm. Only the tallest one actually drives motion --
-# LIFT_HIGH has to clear it -- but the whole set is recorded here so that number
-# is derived and auditable instead of a magic constant nobody can re-check.
+# Measured piece heights in mm.
 PIECE_HEIGHTS = {
-    "king": 95.0,
+    "king": 76.0,
     "queen": 75.0,
     "bishop": 65.0,
     "knight": 58.0,
-    "rook": 46.0,
+    "rook": 47.0,
     "pawn": 45.0,
 }
 
-TALLEST_PIECE = max(PIECE_HEIGHTS.values())    # 95.0 -- the king
+# Measured pickup depth and claw angle for each physical piece. Z is absolute
+# and positive-down: the planner descends from Z0 to this value to grip.
+# A is the SG90 axis angle used while that piece is held.
+PIECE_GRIP_PROFILES = {
+    "pawn": {"z": 85.0, "a": 62.0},
+    "knight": {"z": 75.0, "a": 76.0},
+    "bishop": {"z": 80.0, "a": 43.0},
+    "rook": {"z": 90.0, "a": 43.0},
+    "queen": {"z": 67.0, "a": 35.0},
+    "king": {"z": 67.0, "a": 35.0},
+}
 
-# Loaded carry across occupied squares: clear the tallest piece, plus margin.
-LIFT_MARGIN = 15.0
-LIFT_HIGH = TALLEST_PIECE + LIFT_MARGIN        # 110.0
-
-Z_GRIP = Z_BOARD + GRIP_OFFSET            # -132.0  claw closed around a piece
-Z_CARRY_LOW = Z_GRIP + LIFT_LOW           # -117.0  loaded, empty path
-Z_CARRY_HIGH = Z_GRIP + LIFT_HIGH         #  -22.0  loaded, over other pieces
-Z_SAFE = Z_CARRY_HIGH                     #  -22.0  empty claw always travels here
+# A high transfer travels at the physical top. At Z0, the piece base is the
+# pickup-Z distance above the board. King and queen squares are routed around,
+# so the tallest piece a high path may cross is the 65 mm bishop. The shallowest
+# measured grip is Z67, leaving 2 mm of clearance.
+PROTECTED_PIECE_TYPES = frozenset({"king", "queen"})
+TALLEST_UNPROTECTED_PIECE = max(
+    height for piece, height in PIECE_HEIGHTS.items()
+    if piece not in PROTECTED_PIECE_TYPES
+)
+Z_HIGH_CARRY = Z_TOP
+Z_SAFE = Z_TOP
 
 
 # --------------------------------------------------------------------------- #
@@ -107,17 +120,17 @@ Z_SAFE = Z_CARRY_HIGH                     #  -22.0  empty claw always travels he
 # --------------------------------------------------------------------------- #
 
 # Physical jaw geometry. The inner width is what a piece base has to fit inside;
-# the outer width is what has to clear a neighbouring piece, which is where
-# GRAVEYARD_DX below comes from.
+# the outer width is what has to clear a neighbouring capture position, which
+# sets GRAVEYARD_SPACING below.
 CLAW_OPEN_MM = 60.0    # outer width, jaws open
 CLAW_GRIP_MM = 45.0    # inner width, jaws closed on a piece
+CLAW_INTERNAL_DEPTH_MM = 30.0  # reported internal depth; not a pickup offset
 
 # Degrees, mapped by FluidNC's rc_servo across the A axis travel to the pulse
 # range (A0 -> 1000 us, A90 -> 2000 us). Because the servo is declared as an
 # AXIS and not a spindle, these commands sit in the motion queue and are ordered
 # against the XY/Z moves for free -- no spindle-sync guesswork.
 CLAW_OPEN_A = 0.0      # 1000 us; CLAW_OPEN_MM outer
-CLAW_CLOSED_A = 45.0   # 1500 us; gripping a piece at CLAW_GRIP_MM inner
 
 # Seconds. GRBL/FluidNC read G4 P as SECONDS -- P500 would dwell for 8 minutes.
 CLAW_DWELL_S = 0.5
@@ -137,25 +150,32 @@ F_EMPTY = 3000.0       # unloaded G1 moves (currently unused; rapids handle thes
 # Off-board zones
 # --------------------------------------------------------------------------- #
 
-# GRAVEYARD: a 4 x 8 grid, not a single point. Dropping all 30 capturable
-# pieces on one spot piles them up until they topple into the claw's path.
-# X spacing (62) exceeds the claw's 60 mm open outer width so the jaws never
-# graze a neighbour on the way down. NOTE: assumes the jaws open along X --
-# if they open along Y, swap GRAVEYARD_DX and GRAVEYARD_DY.
-GRAVEYARD_X0 = 500.0
-GRAVEYARD_Y0 = 40.0
-GRAVEYARD_DX = 62.0
-GRAVEYARD_DY = 55.0
-GRAVEYARD_COLS = 4
-GRAVEYARD_ROWS = 8     # 32 slots >= the 30 pieces that can ever be captured
+# GRAVEYARD: temporary flat L-shaped capture area. Eight positions form a
+# column parallel to the h-file at Y485; another eight form a row beyond rank 8
+# at X485. The 62 mm spacing clears the claw's 60 mm open outer width.
+# Clear the area and reset the planner after 16 captures.
+GRAVEYARD_SPACING = 62.0
+GRAVEYARD_COLUMN_Y = 485.0
+GRAVEYARD_ROW_X = 485.0
+GRAVEYARD_POSITIONS = (
+    tuple((i * GRAVEYARD_SPACING, GRAVEYARD_COLUMN_Y) for i in range(8))
+    + tuple((GRAVEYARD_ROW_X, i * GRAVEYARD_SPACING) for i in range(8))
+)
 
-# QUEEN RESERVE: one row per colour. The old single-point reserve handed a
-# white queen to a black promotion.
-QUEEN_RESERVE_X0 = 500.0
-QUEEN_RESERVE_DX = 62.0
-QUEEN_RESERVE_SLOTS = 4
-QUEEN_RESERVE_Y_WHITE = 520.0
-QUEEN_RESERVE_Y_BLACK = 590.0
+# Captures arrive at the high carry height Z0. Descend to the measured Z40,
+# open the claw, and let the piece fall onto the temporary flat area.
+# This deliberately differs from normal placement, which uses the captured
+# piece's own pickup depth.
+GRAVEYARD_RELEASE_Z = 40.0
+GRAVEYARD_DROP_MM = GRAVEYARD_RELEASE_Z - Z_HIGH_CARRY
+
+# QUEEN RESERVE: one spare per colour in the unused positive-XY corner. Both
+# points clear every capture position and each other by more than the 60 mm
+# open-claw width. Add more coordinates here if more physical queens are added.
+QUEEN_RESERVE_POSITIONS = {
+    "white": ((403.0, 540.0),),
+    "black": ((530.0, 540.0),),
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -164,64 +184,113 @@ QUEEN_RESERVE_Y_BLACK = 590.0
 
 def _check() -> None:
     """Validate that the measured build can actually reach every position."""
-    # The single most likely build failure: not enough Z drop to lift a piece
-    # over the king. Needs GRIP_OFFSET + LIFT_HIGH = 128 mm of usable travel.
-    if Z_CARRY_HIGH > Z_TOP:
+    if not (Z_TOP <= Z_BOARD <= Z_BOTTOM):
         raise ValueError(
-            f"Z envelope too short: gripping at {Z_GRIP} and lifting "
-            f"{LIFT_HIGH} mm reaches Z{Z_CARRY_HIGH:+.1f}, above the Z_TOP "
-            f"limit of {Z_TOP}. Need at least "
-            f"{GRIP_OFFSET + LIFT_HIGH:.0f} mm of drop below the homed "
-            f"position; lower Z_BOARD or shorten LIFT_HIGH."
+            f"Z_BOARD ({Z_BOARD}) is outside the Z{Z_TOP}..Z{Z_BOTTOM} envelope."
         )
-    if abs(Z_BOARD) > Z_AXIS_LENGTH:
+    if set(PIECE_GRIP_PROFILES) != set(PIECE_HEIGHTS):
         raise ValueError(
-            f"Z_BOARD ({Z_BOARD}) is deeper than the {Z_AXIS_LENGTH} mm Z axis."
+            "PIECE_GRIP_PROFILES must contain exactly the six measured piece types."
         )
-    if LIFT_HIGH < TALLEST_PIECE:
+    for piece, profile in PIECE_GRIP_PROFILES.items():
+        grip_z = profile["z"]
+        grip_a = profile["a"]
+        if not (Z_TOP <= grip_z <= Z_BOARD):
+            raise ValueError(
+                f"{piece} pickup Z{grip_z} is outside Z{Z_TOP}..Z{Z_BOARD}."
+            )
+        if not (0.0 <= grip_a <= 90.0):
+            raise ValueError(f"{piece} grip A{grip_a} is outside A0..A90.")
+        if grip_z - LIFT_LOW < Z_TOP:
+            raise ValueError(
+                f"{piece} cannot lift {LIFT_LOW} mm from pickup Z{grip_z}."
+            )
+
+    minimum_high_clearance = min(
+        profile["z"] for profile in PIECE_GRIP_PROFILES.values()
+    )
+    if minimum_high_clearance <= TALLEST_UNPROTECTED_PIECE:
         raise ValueError(
-            f"LIFT_HIGH ({LIFT_HIGH}) does not clear the tallest piece "
-            f"({TALLEST_PIECE} mm king) -- carried pieces will sweep the board."
+            f"High carry clears only {minimum_high_clearance:.0f} mm, but an "
+            f"unprotected piece can be {TALLEST_UNPROTECTED_PIECE:.0f} mm tall."
         )
 
-    # Every off-board zone must be reachable and clear of the board itself.
-    board_right = BOARD_ORIGIN_X + BOARD_SPAN_X
-    zones = {
-        "graveyard": (
-            GRAVEYARD_X0 + (GRAVEYARD_COLS - 1) * GRAVEYARD_DX,
-            GRAVEYARD_Y0 + (GRAVEYARD_ROWS - 1) * GRAVEYARD_DY,
-            GRAVEYARD_X0,
-        ),
-        "queen reserve": (
-            QUEEN_RESERVE_X0 + (QUEEN_RESERVE_SLOTS - 1) * QUEEN_RESERVE_DX,
-            QUEEN_RESERVE_Y_BLACK,
-            QUEEN_RESERVE_X0,
-        ),
-    }
-    for name, (max_x, max_y, min_x) in zones.items():
-        if max_x > X_MAX or max_y > Y_MAX:
+    # Every capture position must be reachable and outside the board border.
+    for i, (x, y) in enumerate(GRAVEYARD_POSITIONS):
+        if not (0 <= x <= X_MAX and 0 <= y <= Y_MAX):
             raise ValueError(
-                f"{name} reaches X{max_x} Y{max_y}, outside the "
+                f"graveyard slot {i} at X{x} Y{y} is outside the "
                 f"{X_MAX} x {Y_MAX} envelope."
             )
-        if min_x < board_right:
+        inside_board = (
+            BOARD_OUTER_MIN_X <= x <= BOARD_OUTER_MAX_X and
+            BOARD_OUTER_MIN_Y <= y <= BOARD_OUTER_MAX_Y
+        )
+        if inside_board:
             raise ValueError(
-                f"{name} starts at X{min_x}, overlapping the board "
-                f"(which ends at X{board_right})."
+                f"graveyard slot {i} at X{x} Y{y} overlaps the board."
+            )
+        outside_clearance = max(
+            x - BOARD_OUTER_MAX_X,
+            y - BOARD_OUTER_MAX_Y,
+            BOARD_OUTER_MIN_X - x,
+            BOARD_OUTER_MIN_Y - y,
+        )
+        if outside_clearance < CLAW_OPEN_MM / 2:
+            raise ValueError(
+                f"graveyard slot {i} leaves only {outside_clearance:.1f} mm "
+                f"between its centre and the board; the open claw needs "
+                f"{CLAW_OPEN_MM / 2:.1f} mm."
             )
 
-    if GRAVEYARD_COLS * GRAVEYARD_ROWS < 30:
-        raise ValueError("Graveyard has fewer than 30 slots; captures would collide.")
+    if not GRAVEYARD_POSITIONS:
+        raise ValueError("Graveyard must have at least one capture position.")
 
-    # Slots must be spaced wider than the claw's open outer width, or the jaws
-    # clip the piece in the next slot on the way down.
-    if GRAVEYARD_DX <= CLAW_OPEN_MM:
+    # Check every pair because the L's two arms also approach each other at
+    # their far ends; adjacent positions must clear the open claw everywhere.
+    for i, (x1, y1) in enumerate(GRAVEYARD_POSITIONS):
+        for x2, y2 in GRAVEYARD_POSITIONS[i + 1:]:
+            separation = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+            if separation <= CLAW_OPEN_MM:
+                raise ValueError(
+                    f"Graveyard positions are only {separation:.1f} mm apart; "
+                    f"the open claw is {CLAW_OPEN_MM} mm wide."
+                )
+
+    shallowest_grip = min(
+        profile["z"] for profile in PIECE_GRIP_PROFILES.values()
+    )
+    if not (Z_HIGH_CARRY <= GRAVEYARD_RELEASE_Z <= shallowest_grip):
         raise ValueError(
-            f"GRAVEYARD_DX ({GRAVEYARD_DX}) is not wider than the claw's open "
-            f"outer width ({CLAW_OPEN_MM}) -- the jaws would clip the piece in "
-            f"the neighbouring slot. NOTE: this assumes the jaws open along X; "
-            f"if they open along Y, swap GRAVEYARD_DX and GRAVEYARD_DY."
+            f"GRAVEYARD_RELEASE_Z ({GRAVEYARD_RELEASE_Z}) must be between the "
+            f"high carry Z{Z_HIGH_CARRY} and shallowest pickup Z{shallowest_grip}."
         )
+
+    # Reserve queens must also be reachable, off-board, and separated from all
+    # capture and reserve positions by more than the open claw width.
+    occupied = [(f"graveyard slot {i}", point)
+                for i, point in enumerate(GRAVEYARD_POSITIONS)]
+    for colour, positions in QUEEN_RESERVE_POSITIONS.items():
+        if not positions:
+            raise ValueError(f"No {colour} queen reserve position is configured.")
+        for i, (x, y) in enumerate(positions):
+            label = f"{colour} queen {i}"
+            if not (0 <= x <= X_MAX and 0 <= y <= Y_MAX):
+                raise ValueError(
+                    f"{label} at X{x} Y{y} is outside the "
+                    f"{X_MAX} x {Y_MAX} envelope."
+                )
+            if (BOARD_OUTER_MIN_X <= x <= BOARD_OUTER_MAX_X and
+                    BOARD_OUTER_MIN_Y <= y <= BOARD_OUTER_MAX_Y):
+                raise ValueError(f"{label} at X{x} Y{y} overlaps the board.")
+            for other_label, (ox, oy) in occupied:
+                separation = ((x - ox) ** 2 + (y - oy) ** 2) ** 0.5
+                if separation <= CLAW_OPEN_MM:
+                    raise ValueError(
+                        f"{label} is only {separation:.1f} mm from {other_label}; "
+                        f"the open claw is {CLAW_OPEN_MM} mm wide."
+                    )
+            occupied.append((label, (x, y)))
 
 
 _check()

@@ -39,21 +39,19 @@ axes:
   x:
     # 200 full-steps * 16 / (20T * 2mm GT2) = 80
     steps_per_mm: 80.000
-    # 8000 mm/min = 133 mm/s = 200 rev/min on a 20T GT2 pulley -- well
-    # inside a NEMA 23's torque band at 24V, and only 10.6k steps/s per
-    # motor, nowhere near the RMT engine's ceiling. (The previous 4000 was
-    # set in the first commit and never justified; it is the one
-    # conservative number in this file that had no stated reason.)
+    # 4000 mm/min = 67 mm/s = 100 rev/min on a 20T GT2 pulley -- well
+    # inside a NEMA 23's torque band at 24V, and only 5.3k steps/s per
+    # motor, nowhere near the RMT engine's ceiling.
     # THE REAL CEILING IS NOT ELECTRICAL: X and Y have no limit switches
     # and no soft limits, so nothing stops a runaway rapid from hitting the
     # end of the rail. Raise further only once those switches exist.
-    max_rate_mm_per_min: 8000.000
+    max_rate_mm_per_min: 4000.000
     # Low: a standing chess piece topples easily. This, not max_rate, is
-    # what caps short moves -- reaching 8000 needs 29.6mm of runway and a
-    # square is only 57mm, so most board moves never hit top speed.
+    # what caps short moves -- reaching 4000 needs 7.4mm of runway and a
+    # square is only 58mm, so most board moves never hit top speed.
     acceleration_mm_per_sec2: 300.000
-    # 720mm rail, 5mm margin.
-    max_travel_mm: 715.000
+    # Measured usable +X travel from a1 along the a-file toward a8.
+    max_travel_mm: 535.000
     soft_limits: false
     homing:
       cycle: 0
@@ -71,24 +69,25 @@ axes:
         # wired common-anode pulls it high at boot and the ESP32 enters a
         # permanent boot loop. Moved to gpio.13.
         step_pin: gpio.13
-        direction_pin: gpio.14
+        # Reverse X polarity on BOTH drivers to preserve their ganging.
+        direction_pin: gpio.14:low
     motor1:
       limit_neg_pin: NO_PIN
       hard_limits: false
       pulloff_mm: 4.000
       stepstick:
         step_pin: gpio.16
-        # May need :low to counter-rotate the second rail. Confirm both
-        # motors turn the SAME way before bolting the gantry on.
-        direction_pin: gpio.18
+        # Same polarity change as motor0; both rails reverse together.
+        direction_pin: gpio.18:low
 
   # ---------------------------------------------------------------- Y ----
   y:
     steps_per_mm: 80.000
     # Same reasoning as X above.
-    max_rate_mm_per_min: 8000.000
+    max_rate_mm_per_min: 4000.000
     acceleration_mm_per_sec2: 300.000
-    max_travel_mm: 715.000
+    # Measured usable +Y travel from a1 along rank 1 toward h1.
+    max_travel_mm: 545.000
     soft_limits: false
     homing:
       cycle: 0
@@ -109,30 +108,40 @@ axes:
   # NEMA 17 on rack-and-pinion, so steps_per_mm uses the pinion's PITCH
   # CIRCUMFERENCE, not a belt pitch:
   #     steps_per_mm = 200 * 16 / (pi * module * pinion_teeth)
-  # Assumes module 1.0, 20-tooth pinion:
-  #     pi * 1.0 * 20 = 62.832 mm/rev -> 3200 / 62.832 = 50.930
-  # BLOCKED: replace once the actual pinion is known. A wrong value makes
-  # every grip either miss the piece or drive the claw into the board.
+  # The theoretical module-1.0, 20-tooth estimate was 50.930 steps/mm.
+  # Bench calibration commanded 100 units and measured 20 mm of travel:
+  #     50.930 * (100 / 20) = 254.650 steps/mm
   #
   # !! NO LIMIT SWITCH, NO HOMING, NO SOFT LIMITS !!
   # Configured switchless ON PURPOSE so the axis can be bench-tested before
-  # the switch is wired. Z0 is wherever the carriage happens to sit at
-  # power-on -- it is NOT a repeatable datum. Consequences:
+  # the switch is wired. The intended startup position is fully UP: place
+  # the carriage at the top before power-on/reset so FluidNC's initial Z0 matches
+  # the physical frame. Without a switch this is not a repeatable datum.
+  # Consequences:
   #
-  #   * PARK THE CARRIAGE AT THE TOP OF ITS TRAVEL BEFORE POWERING ON.
-  #     G0 Z-132 descends 132mm from wherever it starts, not from the top.
+  #   * PARK THE CARRIAGE AT THE TOP BEFORE POWERING ON OR RESETTING.
+  #     Z0 is fully up; positive Z lowers the claw. Full travel ends at Z170.
+  #     The board is Z115; measured pickups range from Z67 to Z90.
+  #     Physically set 115mm clearance to the playing surface at the top.
   #   * The ONLY thing keeping the claw out of the table is the Pi-side
-  #     envelope check in tools/gcode_preview.py plus the planner never
-  #     emitting below Z_GRIP. There is no controller-side backstop.
-  #   * Jog in small steps for the first powered test: $J=G91 Z-10 F500.
+  #     envelope check in tools/gcode_preview.py. There is no controller-side
+  #     backstop.
+  #   * Jog down in small steps for the first test: $J=G91 G21 Z10 F500.
   #
   # To restore the datum once the switch is wired: cycle: 1,
-  # soft_limits: true, limit_pos_pin: gpio.17:low:pu.
+  # soft_limits: true, limit_neg_pin: gpio.17:low:pu.
   z:
-    steps_per_mm: 50.930
+    steps_per_mm: 254.650
+    # At the top: set the lowest part of the gripper 115mm above the playing
+    # surface. The board is Z115; top is Z0.
+    # Keep full mechanical travel at 170mm. High loaded travel is at Z0 and
+    # routes around king/queen squares; the shallowest grip clears a 65mm
+    # bishop by 2mm at the top.
     # Z moves 250-440mm per piece transferred -- more than XY does -- so
-    # this is the single biggest lever on how long a turn takes.
-    max_rate_mm_per_min: 2500.000
+    # this is the single biggest lever on how long a turn takes. At 254.650
+    # steps/mm, 4000mm/min is about 17k step pulses/s. Keep the lower
+    # acceleration to preserve lifting torque and reduce missed-step risk.
+    max_rate_mm_per_min: 4000.000
     acceleration_mm_per_sec2: 200.000
     max_travel_mm: 170.000
     # Soft limits are measured against a homed datum. With no homing there
@@ -140,17 +149,17 @@ axes:
     soft_limits: false
     homing:
       # 0 = excluded from $H. The rest of this block is inert but kept so
-      # the intended frame stays recorded: homes UP, top of travel becomes
-      # Z0, work envelope 0 to -170.
+      # the intended frame stays recorded: homes UP toward negative Z, top of
+      # travel is Z0, and the mechanical envelope is Z0 to Z170.
       cycle: 0
-      positive_direction: true
+      positive_direction: false
       mpos_mm: 0.000
       feed_mm_per_min: 200.000
       seek_mm_per_min: 800.000
       settle_ms: 500
     motor0:
-      # Switch belongs at the TOP of travel. Not wired yet.
-      limit_pos_pin: NO_PIN
+      # Switch belongs at the TOP (negative-Z end) of travel. Not wired yet.
+      limit_neg_pin: NO_PIN
       hard_limits: false
       pulloff_mm: 3.000
       stepstick:
@@ -165,9 +174,12 @@ axes:
   # FluidNC maps the pulse range linearly across the axis travel, so with
   # max_travel_mm 90:
   #     A0  -> 1000us   claw OPEN   (60mm outer)
-  #     A45 -> 1500us   claw CLOSED (45mm inner, gripping a piece)
+  #     A35 -> 1389us   measured queen/king grip
+  #     A43 -> 1478us   measured bishop/rook grip
+  #     A62 -> 1689us   measured pawn grip
+  #     A76 -> 1844us   measured knight grip
   #     A90 -> 2000us
-  # A0 and A45 are exactly CLAW_OPEN_A / CLAW_CLOSED_A in motion/config.py.
+  # These angles are the PIECE_GRIP_PROFILES in motion/config.py.
   #
   # THE KEY IS pwm_hz. FluidNC's internal field is _pwm_freq and the wiki
   # prints "pwm_freq", but the parser only accepts pwm_hz -- verified
@@ -209,6 +221,12 @@ axes:
 kinematics:
   Cartesian:
 
+# Run with $Macros/Run=0 only after placing Z fully up at work Z0, clearing
+# the board, and ensuring 10mm of +X/+Y travel. Lowers Z 10mm and returns
+# to the top, then moves X and Y 10mm out and back and cycles the
+# claw. X/Y use relative moves so their coordinates do
+# not need to be initialized; the macro finishes in absolute mode with A open.
+
 # No spindle, no coolant, no probe on this machine.
 start:
   # BLOCKED: set true once X and Y have limit switches.
@@ -224,17 +242,22 @@ start:
 #    wired yet, so all three axes are cycle: 0. $H therefore has NO axes
 #    to home and will error -- `main.py --no-home` is MANDATORY, not just
 #    recommended. After every power cycle the controller has no idea where
-#    square a1 is, nor how high the claw sits. This is the single largest
-#    risk to a working demo.
+#    square a1 is, nor whether the claw was placed at its intended Z0. This
+#    is the single largest risk to a working demo.
 #
 #    Stopgap until wired - after each power-up, once:
+#        G21
+#        G54
 #        $J=G91 X10 F1000     (jog until the claw is centred over a1)
 #        G10 L20 P1 X0 Y0     (declare that spot as work zero)
+#    The CENTRE of a1 is X0 Y0; b1 is X0 Y58 and a2 is X58 Y0.
 #    Prefer G10 L20 over G92: G92 is an offset that survives in ways that
 #    surprise you, G10 L20 sets the work coordinate system directly.
 #
-#    For Z there is no equivalent stopgap - park the carriage at the top
-#    of its travel BEFORE powering on. See the warning on the z: block.
+#    For Z, park the carriage at the TOP before power-on or reset. Once booted
+#    and still at the top, use G21, G54, then G10 L20 P1 Z0 to remove an old
+#    Z work offset. This assigns a coordinate; it does not move or home Z.
+#    Keep Z at the top when opening a serial connection that resets the ESP32.
 #
 # 2. TB6600 CURRENT DIPS are set on the drivers, not here. Set at or just
 #    BELOW the motor's rated current per phase - above it is the only

@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-09-06
+
+### Changed
+
+- Z coordinates now match the built machine: Z0 is fully raised and positive Z
+  moves the gripper downward. The board is therefore Z115 and the mechanical
+  bottom is Z170 after calibration.
+- XY square mapping now matches the physical gantry shown at its a1 start:
+  58 mm increments, with +X following the a-file toward a8 and +Y following
+  rank 1 toward h1. The playing area is 464 x 464 mm, the 20 mm border makes
+  the board 504 x 504 mm overall, and h8 is X406 Y406.
+- Usable travel limits are X535 mm and Y545 mm from the a1 work origin.
+- Pickup and grip are calibrated per piece: pawn Z85/A62, knight Z75/A76,
+  bishop Z80/A43, rook Z90/A43, queen Z67/A35, and king Z67/A35. A0 remains
+  open; positive Z moves down.
+- High loaded travel now runs at Z0 through adjacent square-centre waypoints.
+  The orchestrator supplies current king/queen squares and the planner routes
+  around them. The minimum 67 mm carried-piece clearance passes over the tallest
+  remaining obstacle, the 65 mm bishop, with 2 mm clearance.
+- Z `steps_per_mm` is calibrated from `50.930` to `254.650`: a commanded
+  100-unit move physically travelled 20 mm.
+- The temporary flat capture area is L-shaped: eight positions run along Y485
+  parallel to the h-file and eight run along X485 beyond rank 8. Positions are
+  62 mm apart; captures arrive at Z0 and release at Z40. Clear the area and
+  reset the planner after 16 captures.
+- One promotion queen per colour is reserved in the outer corner: White at
+  X403 Y540 and Black at X530 Y540. Both use the queen Z67/A35 profile.
+- All standalone FluidNC position tests use `G1 F1500` for controlled X/Y/Z
+  motion and retain their four-second `G4 P4` inspection pauses.
+- Added a FluidNC all-squares test that visits every board centre in a snake
+  path, lowers to Z60, immediately retracts to Z0, and parks at a1.
+
 ## [0.4.1] - 2026-09-04
 
 Corrects the FluidNC config against the real hardware. Scope: `fluidnc/`,
@@ -49,13 +81,13 @@ changed — `plan()` produces byte-identical output.
   limits there is no controller-side backstop — the Z carriage must be parked at
   the top of its travel before power-on.
 - **Piece heights encoded** (`motion/config.py`): `PIECE_HEIGHTS` now holds all
-  six measured heights (king 95, queen 75, bishop 65, knight 58, rook 46, pawn
+  six measured heights (king 76, queen 75, bishop 65, knight 58, rook 47, pawn
   45) and `TALLEST_PIECE` / `LIFT_HIGH` derive from it, replacing a hand-typed
   `95.0`. Added `CLAW_OPEN_MM` / `CLAW_GRIP_MM` (60/45) and `RAIL_LENGTH` (720),
   which had been comment-only. Values are unchanged — this makes them auditable.
 - **Graveyard spacing is now checked, not asserted in a comment**
-  (`motion/config.py`): `_check()` fails at import if `GRAVEYARD_DX` is not wider
-  than the claw's open outer width.
+  (`motion/config.py`): `_check()` fails at import if any two capture positions
+  are not farther apart than the claw's open outer width.
 
 ### Notes
 
